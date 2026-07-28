@@ -587,7 +587,11 @@ namespace fork_hooks {
     // on Remix's presenter, so the developer menu has to be drawn into the copied image or it is
     // unreachable. Arming it from here rather than from a config variable keeps the signal
     // unambiguous. Idempotent, so calling it every frame is fine.
-    enableDevMenuOverlay(remixDevice->GetWindow());
+    //
+    // Fallback only (overrideExisting = false). The swapchain's window is the wrong choice for input if
+    // it is not the window the user is looking at, so dxvk_SetDevMenuWindow takes precedence and this
+    // must not overwrite it.
+    enableDevMenuOverlay(remixDevice->GetWindow(), false);
 
     // Resolved here rather than inside the lambda: the Rc is not thread-safe to touch from the
     // render thread while shutdownCallbacks may be clearing it, but a raw VkSemaphore captured by
@@ -602,12 +606,24 @@ namespace fork_hooks {
                          waitForConsumer](DxvkContext* dxvkCtx) {
       auto* ctx = static_cast<RtxContext*>(dxvkCtx);
 
+      // Close out whatever is already on the command list before touching the semaphore slots.
+      //
+      // This matters more than it looks: DxvkCommandList holds exactly ONE extra wait semaphore and
+      // ONE extra signal semaphore, and addSignalSemaphore only guards that with
+      // assert(!m_additionalSignalSemaphore) -- which is compiled out here, because the runtime builds
+      // with NDEBUG. So if anything else already claimed the slot on the frame's shared command list,
+      // our signal silently replaces it, or theirs silently replaces ours and the consumer waits for a
+      // signal that never comes. Flushing first guarantees a fresh list with both slots free.
+      //
+      // The signal cannot simply be moved to a later submission to dodge this: Vulkan gives no
+      // completion ordering between separate submissions on a queue without an explicit dependency, so
+      // a signal submitted after the blit's submission could fire before the blit had finished. Blit
+      // and signal have to share one submission, which is why the list is emptied before rather than
+      // split afterwards.
+      ctx->flushCommandList();
+
       // Wait BEFORE the blit. The hazard being closed is overwriting pixels the consumer is still
       // reading from the previous frame, so waiting afterwards would order nothing useful.
-      //
-      // The wait lands on the command list that also carries the blit, so any Remix work still
-      // pending in that list waits too. In practice the list is near-empty at this point, because
-      // this is called straight after Present has already submitted the frame's raytracing.
       if (waitForConsumer) {
         ctx->getCommandList()->addWaitSemaphore(consumerDone, 1);
       }

@@ -392,8 +392,16 @@ namespace dxvk {
     // is itself the signal that such a host is driving the runtime.
     // hostWindow is handed to ImGui's Win32 backend, which derives its display size from that
     // window's client rect.
+    // hostWindow defines the menu's coordinate space: ImGui takes its display size from that window's
+    // client rect, and GameOverlay positions its raw-input sink over it and hit-tests the cursor
+    // against it. It must therefore be the window the user actually sees and clicks in, which is not
+    // necessarily the window Remix's swapchain was created on.
+    //
+    // overrideExisting distinguishes the host stating its choice from the runtime guessing: the copy
+    // entry point arms this every frame with the swapchain's window as a fallback, and must not
+    // clobber an explicit nomination.
     // Implementation in rtx_fork_overlay.cpp.
-    void enableDevMenuOverlay(HWND hostWindow);
+    void enableDevMenuOverlay(HWND hostWindow, bool overrideExisting);
 
     // Rasterises the developer menu into rtOutput.m_finalOutput from inside the injectRTX chain.
     //

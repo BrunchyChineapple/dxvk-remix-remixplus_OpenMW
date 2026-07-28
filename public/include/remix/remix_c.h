@@ -1060,6 +1060,21 @@ extern "C" {
     uint64_t consumerDone;
   } remixapi_dxvk_OutputSyncInfo;
 
+  // Nominates the window whose client area defines the developer menu's coordinate space.
+  //
+  // Only relevant to a host that consumes the output through the copy API rather than presenting. Such
+  // a host has two different windows in play: the one Remix's swapchain was created on, whose size sets
+  // the render resolution, and the one the user is actually looking at and clicking in. The menu's
+  // input needs the latter -- ImGui derives its display size from that window's client rect, and the
+  // runtime's input sink positions itself over it and hit-tests the cursor against it. Left to default,
+  // both jobs fall to the swapchain window, and the mouse is hit-tested against a rectangle that is not
+  // where the user is clicking.
+  //
+  // Pass the visible, focusable window. Overrides whatever the runtime inferred; call it once after
+  // registering the device. Passing NULL reverts to the inferred window.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_dxvk_SetDevMenuWindow)(
+    void* hwnd);
+
   // Creates (on first call) and reports the output-synchronisation semaphore pair.
   typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_dxvk_GetOutputSyncSemaphores)(
     remixapi_dxvk_OutputSyncInfo* out_info);
@@ -1145,6 +1160,7 @@ extern "C" {
     PFN_remixapi_dxvk_GetSurfaceExternalMemory  dxvk_GetSurfaceExternalMemory;
     PFN_remixapi_dxvk_GetOutputSyncSemaphores   dxvk_GetOutputSyncSemaphores;
     PFN_remixapi_dxvk_CopyRenderingOutputSynced dxvk_CopyRenderingOutputSynced;
+    PFN_remixapi_dxvk_SetDevMenuWindow          dxvk_SetDevMenuWindow;
   } remixapi_Interface;
 
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(
