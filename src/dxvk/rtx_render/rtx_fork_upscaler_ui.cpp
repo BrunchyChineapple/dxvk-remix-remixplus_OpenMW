@@ -138,9 +138,35 @@ namespace dxvk {
             } else if (!DxvkDLFG::enable()) {
               ImGui::TextColored(kStatusFault, "Status: selected but inactive.");
             } else {
-              const uint32_t frames = std::max(DxvkDLFG::maxInterpolatedFrames(), 1u);
+              // The *effective* count, not the requested one. rtx.dlfg.maxInterpolatedFrames defaults
+              // to 2 and its range runs to 6 regardless of hardware, while multi-frame generation needs
+              // Blackwell; on Ada, NGX reports a maximum of one interpolated frame and the runtime
+              // clamps to it. Reading the raw option here reported "3x" on a 4090 that was correctly
+              // running 2x -- a reporting bug that looks exactly like the runtime having forced an
+              // unsupported mode.
+              //
+              // The clamp is duplicated from DxvkDLFG::getInterpolatedFrameCount rather than called,
+              // deliberately. That method reaches DLFG's own device pointer to get at the NGX context,
+              // and in a host where Remix never presents, DLFG is never brought up -- calling it from
+              // here crashed the runtime with an access violation the instant the menu was opened.
+              // metaNGXContext is safe because this function already queries it for the
+              // not-supported reason, and the caller derives isDlfgSupported from it.
+              //
+              // Duplication has a cost: if the runtime's clamp ever gains a term, this readout goes
+              // quietly stale. That is the better failure of the two -- a status line that lags is
+              // recoverable, a status line that can kill the menu it lives in is not.
+              const uint32_t maxSupported
+                  = ctx->getCommonObjects()->metaNGXContext().dlfgMaxInterpolatedFrames();
+              const uint32_t requested = std::max(DxvkDLFG::maxInterpolatedFrames(), 1u);
+              const uint32_t interpolated = std::max(std::min(requested, maxSupported), 1u);
               ImGui::TextColored(kStatusActive,
-                str::format("Status: active - DLSS Frame Generation, ", frames + 1, "x.").c_str());
+                str::format("Status: active - DLSS Frame Generation, ", interpolated + 1, "x.").c_str());
+              if (requested > interpolated) {
+                ImGui::TextColored(kStatusFault,
+                  str::format("Requested ", requested + 1,
+                              "x, but this GPU supports at most ", interpolated + 1,
+                              "x. Multi-frame generation requires a 50-series GPU.").c_str());
+              }
             }
             break;
 

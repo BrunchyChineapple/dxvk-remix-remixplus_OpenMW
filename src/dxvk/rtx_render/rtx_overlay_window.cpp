@@ -506,9 +506,19 @@ void GameOverlay::windowThreadMain() {
   rid[0].dwFlags = RIDEV_INPUTSINK;
   rid[0].hwndTarget = m_hwnd;
   // Keyboard
+  //
+  // RIDEV_NOLEGACY deliberately removed. It stops the listed device generating legacy input messages
+  // for the whole process, not just for this window, so registering it here silenced WM_KEYDOWN and
+  // WM_CHAR everywhere -- and a natively hosted game reads its keyboard from exactly those. The symptom
+  // is stark: the moment this overlay exists the host cannot type at all, while the Remix menu still
+  // takes keys fine, because the menu is fed from the raw path this registration provides.
+  //
+  // In the bridge case NOLEGACY was suppressing a duplicate delivery. The fork already guards that
+  // properly at the other end: overlayInputForward gates the legacy path on isRawInputRecent(), so
+  // keys arriving both ways are not forwarded twice.
   rid[1].usUsagePage = 0x01;
   rid[1].usUsage = 0x06;
-  rid[1].dwFlags = RIDEV_INPUTSINK | RIDEV_NOLEGACY;
+  rid[1].dwFlags = RIDEV_INPUTSINK;
   rid[1].hwndTarget = m_hwnd;
 
   if (!RegisterRawInputDevices(rid, 2, sizeof(RAWINPUTDEVICE))) {

@@ -4324,6 +4324,15 @@ namespace dxvk {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float) surfaceSize.width, (float) surfaceSize.height);
 
+    // After DisplaySize is established and before ImGui::NewFrame, which is where a polled cursor has to
+    // land: it is scaled into DisplaySize, and NewFrame is what freezes the layout the hit-test runs
+    // against. No-op unless a host nominated its window through dxvk_SetDevMenuWindow.
+    //
+    // This sat in update() when it was written, because that is where the NewFrame pair used to live.
+    // update() is now called from inside this function, after NewFrame, so leaving it there would have
+    // fed ImGui a cursor position one frame late for a hit-test that had already been decided.
+    fork_hooks::pollDevMenuMouse();
+
     ImGui::NewFrame();
 
     update(ctx);

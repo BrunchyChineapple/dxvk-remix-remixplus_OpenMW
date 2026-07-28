@@ -24,6 +24,7 @@
 #include "imgui/imgui_remix_exports.h" // remixapi_imgui_InvokeDrawCallback (wrapperTabDraw)
 
 #include "rtx_context.h"              // RtxContext
+#include "rtx_options.h"              // RtxOptions::showUI, UIType (pollDevMenuMouse)
 #include "rtx_resources.h"            // Resources::RaytracingOutput
 #include "rtx_shader_manager.h"       // ManagedShader, SHADER_SOURCE, PUSH_CONSTANTS macros
 #include "imgui/dxvk_imgui.h"         // ImGUI::render (dispatchDevMenuOverlay)
@@ -344,6 +345,58 @@ namespace fork_hooks {
     s_devMenuOverlayHwndExplicit.store(hostWindow != nullptr, std::memory_order_relaxed);
     Logger::info(str::format("Dev menu overlay bound to host window ", hostWindow,
                              " for display size and mouse hit-testing"));
+  }
+
+  void pollDevMenuMouse() {
+    HWND hostWindow = s_devMenuOverlayHwnd.load(std::memory_order_relaxed);
+    if (hostWindow == nullptr) {
+      return;
+    }
+
+    // Only while the menu is up. Outside that the game owns the pointer, and pushing synthetic button
+    // events at ImGui then would make it think the mouse is held down during normal play.
+    if (RtxOptions::showUI() == UIType::None) {
+      return;
+    }
+
+    POINT cursor {};
+    if (!GetCursorPos(&cursor) || !ScreenToClient(hostWindow, &cursor)) {
+      return;
+    }
+
+    RECT client {};
+    if (!GetClientRect(hostWindow, &client)) {
+      return;
+    }
+    const float clientWidth = static_cast<float>(client.right - client.left);
+    const float clientHeight = static_cast<float>(client.bottom - client.top);
+    if (clientWidth <= 0.f || clientHeight <= 0.f) {
+      return;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    // ImGui's display size is normally this window's client rect, so these scales are usually 1. They
+    // are not free to omit: the host can be rendering the menu into an image of a different size than
+    // the window it is measuring, and then hit-testing has to follow the image.
+    const float scaleX = io.DisplaySize.x > 0.f ? io.DisplaySize.x / clientWidth : 1.f;
+    const float scaleY = io.DisplaySize.y > 0.f ? io.DisplaySize.y / clientHeight : 1.f;
+    io.AddMousePosEvent(static_cast<float>(cursor.x) * scaleX, static_cast<float>(cursor.y) * scaleY);
+
+    // GetAsyncKeyState rather than GetKeyState: GetKeyState reports the state as of the last message
+    // the *calling thread* pulled from its queue, and the render thread never pumps one, so it would
+    // report every button permanently up.
+    //
+    // GetSystemMetrics(SM_SWAPBUTTON) is honoured because the physical buttons are what the virtual
+    // key codes name; the logical primary button is what the user is pressing.
+    const bool swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
+    const int primary = swapped ? VK_RBUTTON : VK_LBUTTON;
+    const int secondary = swapped ? VK_LBUTTON : VK_RBUTTON;
+    io.AddMouseButtonEvent(0, (GetAsyncKeyState(primary) & 0x8000) != 0);
+    io.AddMouseButtonEvent(1, (GetAsyncKeyState(secondary) & 0x8000) != 0);
+    io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
+
+    // The wheel has no polled equivalent -- it is a delta, not a state -- so scrolling still depends on
+    // the raw-input path. Sliders and drags work regardless, which is enough to tune with.
   }
 
   void dispatchDevMenuOverlay(RtxContext& ctx, Resources::RaytracingOutput& rtOutput) {
