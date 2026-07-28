@@ -887,6 +887,11 @@ namespace dxvk {
     ImGui_ImplDxvk::NewFrame();
     ImGui_ImplWin32_NewFrame();
 
+    // Between the backend's NewFrame and ImGui's, so a polled position wins over the backend's own
+    // fallback, and after the backend has established DisplaySize so the poll can scale into it.
+    // No-op unless a host nominated its window through dxvk_SetDevMenuWindow.
+    fork_hooks::pollDevMenuMouse();
+
     ImGui::NewFrame();
 
     processHotkeys();

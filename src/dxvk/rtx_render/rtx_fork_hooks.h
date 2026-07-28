@@ -56,6 +56,9 @@ namespace dxvk { class D3D9DeviceEx; }
 // needed by fork_hooks::populateTonemapOperatorArgs.
 #include "rtx/pass/tonemap/tonemapping.h"
 
+// Atomic counters in the inline noteExternalDraw below.
+#include <atomic>
+
 namespace dxvk {
 
   // Forward declarations for types whose full definitions the hook header does
@@ -402,6 +405,92 @@ namespace dxvk {
     // clobber an explicit nomination.
     // Implementation in rtx_fork_overlay.cpp.
     void enableDevMenuOverlay(HWND hostWindow, bool overrideExisting);
+
+    // Feeds ImGui the cursor position and mouse button state by polling, for a host nominated through
+    // enableDevMenuOverlay.
+    //
+    // Needed because GameOverlay's sink delivers mouse buttons over raw input only, and raw-input
+    // registration is per-process per-device: a natively hosted game that registers the mouse itself --
+    // SDL does, for relative mouse mode -- replaces the sink's registration, and WM_INPUT stops
+    // arriving. Cursor *position* keeps working, because ImGui's Win32 backend has a GetCursorPos
+    // fallback for it, so the symptom is a menu whose cursor tracks the mouse perfectly and ignores
+    // every click.
+    //
+    // Polling sidesteps the registration conflict entirely and needs no message pump, which matters
+    // because the only thread that reliably runs for such a host is the render thread. Must be called
+    // between ImGui_ImplWin32_NewFrame and ImGui::NewFrame so its events are the last word.
+    // No-op unless enableDevMenuOverlay has been called, so games that present normally are unaffected.
+    // Implementation in rtx_fork_overlay.cpp.
+    void pollDevMenuMouse();
+
+    // What became of one external-API draw by the time the runtime had finished with it.
+    //
+    // Every field is something a host cannot otherwise observe. DrawInstance returns success the moment
+    // the work is queued, and everything that can go on to make the draw invisible -- an ignored
+    // material, an empty mesh, a zeroed instance mask, a hidden instance, an alpha test that rejects
+    // every hit -- happens afterwards on the render thread. Without this a host sees healthy submit
+    // counts and an empty frame, with no way to tell "never submitted" from "submitted and discarded"
+    // from "in the acceleration structure but unhittable".
+    struct ExternalDrawReport {
+      bool     accepted;         // processDrawCallState returned an instance
+      uint64_t meshHash;
+      uint32_t vertexCount;      // as registered, not as submitted -- zero here means CreateMesh lost it
+      uint32_t indexCount;
+      float    worldPos[3];      // objectToWorld translation as the runtime reads it
+      uint32_t instanceMask;     // VkAccelerationStructureInstanceKHR::mask; zero is unhittable
+      bool     hidden;
+      bool     fullyOpaque;
+      uint32_t alphaTestType;    // AlphaTestType; kNever (0) rejects every hit
+      uint32_t tlasSurfaceCount;
+    };
+
+    // Reports an ExternalDrawReport on a geometric schedule -- the first draw, then the tenth,
+    // hundredth and so on. Dense enough to catch a problem that only appears once the world is up, and
+    // free once the counts are large, which matters at several hundred draws a frame.
+    //
+    // Inline here rather than in a rtx_fork_*.cpp, against this header's usual convention, because the
+    // caller is rtx_scene_manager.cpp: an out-of-line definition puts the symbol in a fork TU that also
+    // holds the API entry points, and referencing it from the scene manager makes the linker pull that
+    // object -- and its D3D9DeviceEx dependencies -- into the unit-test targets, which do not link the
+    // d3d9 module. This function needs nothing but logging, so there is no reason for it to create that
+    // edge. Function-local statics in an inline function are one object across the program, so the
+    // counters stay global.
+    inline void noteExternalDraw(const ExternalDrawReport& report) {
+      static std::atomic<uint64_t> s_total { 0 };
+      static std::atomic<uint64_t> s_rejected { 0 };
+      static std::atomic<uint64_t> s_unhittable { 0 };
+      static std::atomic<uint64_t> s_nextReportAt { 1 };
+
+      const uint64_t total = s_total.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (!report.accepted) {
+        s_rejected.fetch_add(1, std::memory_order_relaxed);
+      } else if (report.instanceMask == 0) {
+        s_unhittable.fetch_add(1, std::memory_order_relaxed);
+      }
+
+      uint64_t due = s_nextReportAt.load(std::memory_order_relaxed);
+      if (total < due) {
+        return;
+      }
+      // Claim the milestone before logging, so concurrent callers do not all report the same one.
+      if (!s_nextReportAt.compare_exchange_strong(due, due * 10, std::memory_order_relaxed)) {
+        return;
+      }
+
+      Logger::info(str::format(
+        "[RTX-ExternalDraw] draw ", total,
+        ": mesh 0x", std::hex, report.meshHash, std::dec,
+        " verts ", report.vertexCount, " indices ", report.indexCount,
+        " at ", report.worldPos[0], ", ", report.worldPos[1], ", ", report.worldPos[2],
+        " | accepted ", report.accepted ? "yes" : "NO",
+        " mask 0x", std::hex, report.instanceMask, std::dec,
+        " hidden ", report.hidden ? "YES" : "no",
+        " fullyOpaque ", report.fullyOpaque ? "yes" : "NO",
+        " alphaTest ", report.alphaTestType,
+        " | tlas surfaces ", report.tlasSurfaceCount,
+        " | running: ", s_rejected.load(std::memory_order_relaxed), " rejected, ",
+        s_unhittable.load(std::memory_order_relaxed), " with a zero instance mask"));
+    }
 
     // Rasterises the developer menu into rtOutput.m_finalOutput from inside the injectRTX chain.
     //
