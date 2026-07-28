@@ -360,6 +360,53 @@ namespace dxvk {
       IDirect3DSurface9*                surface,
       remixapi_dxvk_ExternalMemoryInfo* out_info);
 
+    // Creates on first call, and reports, the exportable binary semaphore pair used to order the
+    // copy into a shared surface against a foreign API's sampling of it. Companion to
+    // getSurfaceExternalMemory: that one makes the pixels reachable from another API, this one makes
+    // reading them defined. Handles stay owned by Remix.
+    // No private-member access; no friend declaration needed.
+    // Implementation in rtx_fork_api_entry.cpp.
+    remixapi_ErrorCode getOutputSyncSemaphores(
+      D3D9DeviceEx*                 remixDevice,
+      remixapi_dxvk_OutputSyncInfo* out_info);
+
+    // As the upstream copy entry point, but brackets the blit with the semaphore pair above so a
+    // consumer in another API has a defined ordering. Deliberately separate from
+    // remixapi_dxvk_CopyRenderingOutput rather than a flag on it, so the upstream path keeps its
+    // exact behaviour for every existing caller.
+    //
+    // waitForConsumer is the caller's assertion that its consumer signalled since the last call.
+    // Binary semaphores have to stay balanced and OpenGL cannot import a timeline semaphore, so an
+    // unmatched wait would block the render thread with no way to recover. Only the caller knows
+    // whether its consumer ran, so this is not inferred here.
+    // No private-member access; no friend declaration needed.
+    // Implementation in rtx_fork_api_entry.cpp.
+    remixapi_ErrorCode copyRenderingOutputSynced(
+      D3D9DeviceEx*                         remixDevice,
+      IDirect3DSurface9*                    destination,
+      remixapi_dxvk_CopyRenderingOutputType type,
+      bool                                  waitForConsumer);
+
+    // Arms dispatchDevMenuOverlay for a host that consumes Remix's output through the copy entry
+    // points rather than by presenting. Idempotent; called from copyRenderingOutputSynced, whose use
+    // is itself the signal that such a host is driving the runtime.
+    // hostWindow is handed to ImGui's Win32 backend, which derives its display size from that
+    // window's client rect.
+    // Implementation in rtx_fork_overlay.cpp.
+    void enableDevMenuOverlay(HWND hostWindow);
+
+    // Rasterises the developer menu into rtOutput.m_finalOutput from inside the injectRTX chain.
+    //
+    // Needed because the normal overlay draw lives in D3D9SwapChainEx::PresentImage and targets the
+    // WSI swapchain image, which puts it out of reach of a host that reads m_finalOutput instead of
+    // presenting -- and entirely undrawn for a host whose presenter never runs at all.
+    //
+    // No-op until enableDevMenuOverlay has been called, so games that present normally are
+    // unaffected and never get a second ImGui frame.
+    // Uses only public DxvkContext API, so no friend declaration is required.
+    // Implementation in rtx_fork_overlay.cpp.
+    void dispatchDevMenuOverlay(RtxContext& ctx, Resources::RaytracingOutput& rtOutput);
+
     // Stub: the DX11 shared-memory export backbuffer path is not ported to this
     // fork. Validates arguments then returns GENERAL_FAILURE so callers fall back;
     // the vtable slot is populated so the struct layout matches the plugin ABI.

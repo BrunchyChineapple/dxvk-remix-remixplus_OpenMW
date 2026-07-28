@@ -51,6 +51,7 @@
 #include "../dxvk_util.h"                 // util::computeMipLevelExtent, computeImageDataSize
 #include "../imgui/dxvk_imgui.h"          // ImGUI::switchMenu, ImGUI::AddTexture
 #include "rtx_scene_manager.h"            // SceneManager::requestVramCompaction, requestTextureVramFree
+#include "rtx_semaphore.h"                // RtxSemaphore::createBinary, sharedHandle
 
 #include "../../d3d9/d3d9_device.h"       // D3D9DeviceEx, LockDevice, EmitCs, GetDXVKDevice
 #include "../../d3d9/d3d9_texture.h"      // D3D9CommonTexture, GetCommonTexture
@@ -463,6 +464,200 @@ namespace fork_hooks {
   }
 
   // ---------------------------------------------------------------------------
+  // Output synchronisation state (fork addition, 2026-07-28)
+  //
+  // A pair of exportable BINARY semaphores that order the copy into a shared
+  // surface against a foreign API's sampling of it. Companion to
+  // getSurfaceExternalMemory: that made the pixels reachable from another API,
+  // this makes reading them defined rather than a race.
+  //
+  // Created on first request, not at device creation: a host that never
+  // composites Remix output elsewhere should not allocate them, and there is no
+  // DxvkDevice to create them from until a device has been registered.
+  //
+  // Released by shutdownCallbacks, which remixapi_Shutdown calls BEFORE it drops
+  // the device. Leaving them to static destruction instead would run
+  // vkDestroySemaphore against an already-destroyed device.
+  // ---------------------------------------------------------------------------
+  static Rc<RtxSemaphore> s_copyCompleteSemaphore;
+  static Rc<RtxSemaphore> s_consumerDoneSemaphore;
+
+  static void releaseOutputSyncSemaphores() {
+    s_copyCompleteSemaphore = nullptr;
+    s_consumerDoneSemaphore = nullptr;
+  }
+
+  // Creates the pair on first use. Returns false if it could not be created, in which case the
+  // caller must fail rather than fall back to an unsynchronised copy: silently dropping the
+  // synchronisation would reintroduce exactly the race this exists to close.
+  static bool ensureOutputSyncSemaphores(D3D9DeviceEx* remixDevice) {
+    if (s_copyCompleteSemaphore.ptr() != nullptr && s_consumerDoneSemaphore.ptr() != nullptr) {
+      return true;
+    }
+
+    DxvkDevice* device = remixDevice->GetDXVKDevice().ptr();
+    if (device == nullptr) {
+      return false;
+    }
+
+    try {
+      // shared = true is the entire point of routing through RtxSemaphore here: it attaches
+      // VkExportSemaphoreCreateInfo and retrieves the Win32 handle. D3D9SwapchainExternal creates its
+      // own pair unshared, which is the only reason that pair cannot simply be reused.
+      s_copyCompleteSemaphore = RtxSemaphore::createBinary(device, "RemixApi::outputCopyComplete", true);
+      s_consumerDoneSemaphore = RtxSemaphore::createBinary(device, "RemixApi::outputConsumerDone", true);
+    } catch (const DxvkError& e) {
+      Logger::err(str::format("ensureOutputSyncSemaphores: ", e.message()));
+      releaseOutputSyncSemaphores();
+      return false;
+    }
+
+    // A semaphore can be created successfully and still yield no handle: createBinary only records
+    // one if vkGetSemaphoreWin32HandleKHR succeeded. Without handles there is nothing for the
+    // consumer to import, so treat it as a failure here rather than at import time.
+    if (s_copyCompleteSemaphore->sharedHandle() == INVALID_HANDLE_VALUE
+        || s_consumerDoneSemaphore->sharedHandle() == INVALID_HANDLE_VALUE) {
+      Logger::err("ensureOutputSyncSemaphores: the driver returned no exportable semaphore handle");
+      releaseOutputSyncSemaphores();
+      return false;
+    }
+
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // getOutputSyncSemaphores (fork addition, 2026-07-28)
+  // ---------------------------------------------------------------------------
+  remixapi_ErrorCode getOutputSyncSemaphores(
+      D3D9DeviceEx*                 remixDevice,
+      remixapi_dxvk_OutputSyncInfo* out_info) {
+    if (!remixDevice) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!out_info) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    if (!ensureOutputSyncSemaphores(remixDevice)) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    *out_info = {};
+    out_info->copyComplete = reinterpret_cast<uint64_t>(s_copyCompleteSemaphore->sharedHandle());
+    out_info->consumerDone = reinterpret_cast<uint64_t>(s_consumerDoneSemaphore->sharedHandle());
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  // ---------------------------------------------------------------------------
+  // copyRenderingOutputSynced (fork addition, 2026-07-28)
+  //
+  // Mirrors remixapi_dxvk_CopyRenderingOutput's blit, with the semaphore pair
+  // wrapped around it. Kept as a separate entry point rather than a flag on the
+  // upstream one so existing callers keep byte-identical behaviour.
+  // ---------------------------------------------------------------------------
+  remixapi_ErrorCode copyRenderingOutputSynced(
+      D3D9DeviceEx*                         remixDevice,
+      IDirect3DSurface9*                    destination,
+      remixapi_dxvk_CopyRenderingOutputType type,
+      bool                                  waitForConsumer) {
+    if (!remixDevice) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!destination) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+
+    // Only FINAL_COLOR. The depth/normal/picking outputs exist for tooling that reads them
+    // occasionally, and a per-frame binary handshake around an occasional read is precisely the way
+    // to strand the render thread on a wait that never gets its matching signal.
+    if (type != REMIXAPI_DXVK_COPY_RENDERING_OUTPUT_TYPE_FINAL_COLOR) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+
+    D3D9Surface* destSurface = static_cast<D3D9Surface*>(destination);
+    D3D9CommonTexture* destTexInfo = destSurface ? destSurface->GetCommonTexture() : nullptr;
+    if (!destTexInfo) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    if (!ensureOutputSyncSemaphores(remixDevice)) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    // A host reaching for this entry point is by definition consuming the output rather than relying
+    // on Remix's presenter, so the developer menu has to be drawn into the copied image or it is
+    // unreachable. Arming it from here rather than from a config variable keeps the signal
+    // unambiguous. Idempotent, so calling it every frame is fine.
+    enableDevMenuOverlay(remixDevice->GetWindow());
+
+    // Resolved here rather than inside the lambda: the Rc is not thread-safe to touch from the
+    // render thread while shutdownCallbacks may be clearing it, but a raw VkSemaphore captured by
+    // value is stable for the lifetime of the submission.
+    const VkSemaphore copyComplete = s_copyCompleteSemaphore->handle();
+    const VkSemaphore consumerDone = s_consumerDoneSemaphore->handle();
+
+    // Locking matches the upstream copy entry point, which relies on the caller holding the remix-api
+    // mutex and does not take the device lock. Deliberately not strengthened here: diverging would
+    // change lock ordering relative to every other dxvk_* entry point.
+    remixDevice->EmitCs([cDest = destTexInfo->GetImage(), copyComplete, consumerDone,
+                         waitForConsumer](DxvkContext* dxvkCtx) {
+      auto* ctx = static_cast<RtxContext*>(dxvkCtx);
+
+      // Wait BEFORE the blit. The hazard being closed is overwriting pixels the consumer is still
+      // reading from the previous frame, so waiting afterwards would order nothing useful.
+      //
+      // The wait lands on the command list that also carries the blit, so any Remix work still
+      // pending in that list waits too. In practice the list is near-empty at this point, because
+      // this is called straight after Present has already submitted the frame's raytracing.
+      if (waitForConsumer) {
+        ctx->getCommandList()->addWaitSemaphore(consumerDone, 1);
+      }
+
+      Resources& resourceManager = ctx->getCommonObjects()->getResources();
+      const Resources::RaytracingOutput& rtOutput = resourceManager.getRaytracingOutput();
+      Rc<DxvkImage> srcImage = rtOutput.m_finalOutput.resource(Resources::AccessType::Read).image;
+
+      if (srcImage.ptr() != nullptr) {
+        RtxContext::blitImageHelper(ctx, srcImage, cDest, VkFilter::VK_FILTER_NEAREST);
+
+        // No layout transition. Shared images skip OptimizeLayout and stay in
+        // VK_IMAGE_LAYOUT_GENERAL (d3d9_common_texture.cpp), which is what an OpenGL importer
+        // declares as GL_LAYOUT_GENERAL_EXT. The barrier is still required to make the transfer
+        // write visible to a consumer on another queue.
+        ctx->emitMemoryBarrier(VK_DEPENDENCY_DEVICE_GROUP_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               VK_ACCESS_TRANSFER_WRITE_BIT,
+                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                               VK_ACCESS_SHADER_READ_BIT);
+      }
+
+      // Signal unconditionally, even when there was nothing to copy. A consumer that is already
+      // waiting would otherwise hang, and because these are binary semaphores a single skipped
+      // signal leaves the pairing off by one for every frame after it.
+      ctx->getCommandList()->addSignalSemaphore(copyComplete, 1);
+
+      // Submit now. Left unflushed, the signal would sit in an open command list until something
+      // else happened to flush it, and the consumer would block for an unbounded time.
+      ctx->flushCommandList();
+    });
+
+    // EmitCs only *queues* the lambda for the render thread, so without this the caller could issue
+    // its wait before the signal had been submitted at all. That is not merely early: waiting on a
+    // semaphore with no signal submitted is undefined behaviour under GL_EXT_semaphore, and NVIDIA's
+    // driver reports it as GL_INVALID_OPERATION rather than blocking. Draining the CS thread here
+    // guarantees the signal is on its way before the consumer is told it may wait.
+    //
+    // Costs a CPU sync with the render thread once per frame. D3D9SwapchainExternal::Present pays the
+    // same price for the same reason, so this is the established shape rather than a new tax.
+    //
+    // Not a deadlock risk despite the pending GPU wait: addWaitSemaphore records a wait for the GPU
+    // queue, it does not block the CPU, so the submission still completes promptly.
+    remixDevice->Flush();
+    remixDevice->SynchronizeCsThread();
+
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  // ---------------------------------------------------------------------------
   // dxvkGetTextureHash (migration #7b)
   //
   // Retrieves the D3D9CommonTexture from the D3D9 texture pointer, gets the
@@ -786,6 +981,12 @@ namespace fork_hooks {
     s_endCallback     = nullptr;
     s_presentCallback = nullptr;
     s_inFrame.store(false);
+
+    // Also the right moment to drop the output-sync semaphores: this runs while the device is still
+    // alive, whereas static destruction would not. Named for callbacks but reached only from
+    // remixapi_Shutdown, so it is the one hook with the correct lifetime for any device-owned
+    // fork state in this translation unit.
+    releaseOutputSyncSemaphores();
   }
 
   // ---------------------------------------------------------------------------
