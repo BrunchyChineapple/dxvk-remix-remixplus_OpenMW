@@ -656,20 +656,23 @@ namespace fork_hooks {
       ctx->flushCommandList();
     });
 
-    // EmitCs only *queues* the lambda for the render thread, so without this the caller could issue
-    // its wait before the signal had been submitted at all. That is not merely early: waiting on a
-    // semaphore with no signal submitted is undefined behaviour under GL_EXT_semaphore, and NVIDIA's
-    // driver reports it as GL_INVALID_OPERATION rather than blocking. Draining the CS thread here
-    // guarantees the signal is on its way before the consumer is told it may wait.
+    // Deliberately NOT draining the CS thread here.
     //
-    // Costs a CPU sync with the render thread once per frame. D3D9SwapchainExternal::Present pays the
-    // same price for the same reason, so this is the established shape rather than a new tax.
+    // An earlier revision called Flush() + SynchronizeCsThread() at this point, on the theory that the
+    // consumer might issue its wait before the signal had been submitted. That theory was tested and
+    // disproved -- it changed nothing about the GL_INVALID_OPERATION the consumer was seeing -- and the
+    // sync turned out to be one leg of a three-way deadlock that hung the whole process:
     //
-    // Not a deadlock risk despite the pending GPU wait: addWaitSemaphore records a wait for the GPU
-    // queue, it does not block the CPU, so the submission still completes promptly.
-    remixDevice->Flush();
-    remixDevice->SynchronizeCsThread();
-
+    //   1. the caller's thread blocks here in SynchronizeCsThread, waiting for the render thread;
+    //   2. the render thread is inside dispatchDevMenuOverlay -> ImGUI::render -> GameOverlay::update,
+    //      busy-waiting for the overlay thread to finish creating its window;
+    //   3. the overlay thread is in GameOverlay::show, calling SetWindowPos/ShowWindow on the *host's*
+    //      window, which blocks until that window's thread pumps messages -- and that thread is the one
+    //      stuck at (1).
+    //
+    // Windows reports the result as AppHangB1 rather than a crash. Adding a CPU sync between the API
+    // thread and the render thread is not safe while the render thread can reach into window
+    // management, so if a submission barrier is ever genuinely needed it has to be a GPU-side one.
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
@@ -749,6 +752,10 @@ namespace fork_hooks {
       case REMIXAPI_FORMAT_B8G8R8A8_SRGB:  vkFormat = VK_FORMAT_B8G8R8A8_SRGB;        break;
       case REMIXAPI_FORMAT_BC1_RGB_UNORM:  vkFormat = VK_FORMAT_BC1_RGB_UNORM_BLOCK;   break;
       case REMIXAPI_FORMAT_BC1_RGB_SRGB:   vkFormat = VK_FORMAT_BC1_RGB_SRGB_BLOCK;    break;
+      case REMIXAPI_FORMAT_BC1_RGBA_UNORM: vkFormat = VK_FORMAT_BC1_RGBA_UNORM_BLOCK;  break;
+      case REMIXAPI_FORMAT_BC1_RGBA_SRGB:  vkFormat = VK_FORMAT_BC1_RGBA_SRGB_BLOCK;   break;
+      case REMIXAPI_FORMAT_BC2_UNORM:      vkFormat = VK_FORMAT_BC2_UNORM_BLOCK;       break;
+      case REMIXAPI_FORMAT_BC2_SRGB:       vkFormat = VK_FORMAT_BC2_SRGB_BLOCK;        break;
       case REMIXAPI_FORMAT_BC3_UNORM:      vkFormat = VK_FORMAT_BC3_UNORM_BLOCK;       break;
       case REMIXAPI_FORMAT_BC3_SRGB:       vkFormat = VK_FORMAT_BC3_SRGB_BLOCK;        break;
       case REMIXAPI_FORMAT_BC5_UNORM:      vkFormat = VK_FORMAT_BC5_UNORM_BLOCK;       break;
@@ -970,6 +977,24 @@ namespace fork_hooks {
       }
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // noteExternalDrawResult (fork addition, 2026-07-28)
+  //
+  // Reports how many external-API draws survive processDrawCallState and how
+  // many it drops.
+  //
+  // Exists because a host that submits through the API has no other way to
+  // learn this. DrawInstance returns success as soon as the work is queued on
+  // the render thread, and everything that can reject the draw afterwards --
+  // an ignored material, an instance the manager declines to create -- happens
+  // silently on that thread. The host then sees a healthy submit count and an
+  // empty picture, with nothing to distinguish "not submitted" from "submitted
+  // and discarded".
+  // ---------------------------------------------------------------------------
+  // noteExternalDraw is deliberately not here: it is inline in rtx_fork_hooks.h, because defining it
+  // in this file made the linker drag this TU's D3D9DeviceEx dependencies into the unit-test targets
+  // as soon as rtx_scene_manager.cpp referenced it. See the comment at its definition.
 
   // ---------------------------------------------------------------------------
   // registerCallbacks (migration #7c)

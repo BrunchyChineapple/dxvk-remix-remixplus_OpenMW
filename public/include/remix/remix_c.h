@@ -890,8 +890,18 @@ extern "C" {
     REMIXAPI_FORMAT_B8G8R8A8_SRGB = 50,    // VK_FORMAT_B8G8R8A8_SRGB
     REMIXAPI_FORMAT_BC1_RGB_UNORM = 131,   // VK_FORMAT_BC1_RGB_UNORM_BLOCK
     REMIXAPI_FORMAT_BC1_RGB_SRGB = 132,    // VK_FORMAT_BC1_RGB_SRGB_BLOCK
+    // BC1 with a one-bit alpha. Identical block layout to BC1_RGB, so a caller that has DXT1 data does
+    // not know which of the two it holds from the bytes alone -- the source format says. Uploading
+    // alpha-carrying DXT1 as BC1_RGB silently drops the cutout, which turns foliage and lattices into
+    // solid squares.
+    REMIXAPI_FORMAT_BC1_RGBA_UNORM = 133,  // VK_FORMAT_BC1_RGBA_UNORM_BLOCK
+    REMIXAPI_FORMAT_BC1_RGBA_SRGB = 134,   // VK_FORMAT_BC1_RGBA_SRGB_BLOCK
     REMIXAPI_FORMAT_BC3_UNORM = 135,       // VK_FORMAT_BC3_UNORM_BLOCK
     REMIXAPI_FORMAT_BC3_SRGB = 136,        // VK_FORMAT_BC3_SRGB_BLOCK
+    // BC2, i.e. DXT3: explicit four-bit alpha. Rarer than BC1 and BC3 but present in Morrowind-era
+    // texture sets, and without it those textures have to be dropped entirely.
+    REMIXAPI_FORMAT_BC2_UNORM = 137,       // VK_FORMAT_BC2_UNORM_BLOCK
+    REMIXAPI_FORMAT_BC2_SRGB = 138,        // VK_FORMAT_BC2_SRGB_BLOCK
     REMIXAPI_FORMAT_BC5_UNORM = 139,       // VK_FORMAT_BC5_UNORM_BLOCK (normal maps)
     REMIXAPI_FORMAT_BC7_UNORM = 145,       // VK_FORMAT_BC7_UNORM_BLOCK
     REMIXAPI_FORMAT_BC7_SRGB = 146,        // VK_FORMAT_BC7_SRGB_BLOCK
