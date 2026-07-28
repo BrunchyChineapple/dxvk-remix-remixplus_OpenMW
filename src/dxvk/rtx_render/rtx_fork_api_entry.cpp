@@ -397,6 +397,72 @@ namespace fork_hooks {
   }
 
   // ---------------------------------------------------------------------------
+  // getSurfaceExternalMemory (fork addition, 2026-07-28)
+  //
+  // Exposes the exportable allocation behind a shared D3D9 surface so a host that
+  // owns its own window can import Remix's output into another API. Written for the
+  // OpenMW integration, which composites into an OpenGL frame.
+  //
+  // Only memorySize genuinely requires renderer-side help. The handle is already
+  // reachable (D3D9CommonTexture hands it back at creation), but the size is not:
+  // Vulkan pads allocations per driver, so a caller cannot derive it from the
+  // surface description, and glTextureStorageMem2DEXT needs it exactly.
+  //
+  // The surface must have been created with a non-null pSharedHandle. That is what
+  // makes D3D9CommonTexture::CreatePrimaryImage set sharing.mode = Export and
+  // shared = true, which in turn makes DxvkImage attach VkExportMemoryAllocateInfo
+  // and a dedicated allocation. Without it DxvkImage::sharedHandle() returns
+  // INVALID_HANDLE_VALUE and there is nothing to report.
+  //
+  // The returned handle belongs to Remix. Callers must not close it.
+  // ---------------------------------------------------------------------------
+  remixapi_ErrorCode getSurfaceExternalMemory(
+      D3D9DeviceEx*                     remixDevice,
+      IDirect3DSurface9*                surface,
+      remixapi_dxvk_ExternalMemoryInfo* out_info) {
+    if (!remixDevice) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!surface || !out_info) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+
+    D3D9Surface* d3d9Surface = static_cast<D3D9Surface*>(surface);
+    D3D9CommonTexture* texInfo = d3d9Surface->GetCommonTexture();
+    if (!texInfo) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    const Rc<DxvkImage> image = texInfo->GetImage();
+    if (image.ptr() == nullptr) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    const HANDLE handle = image->sharedHandle();
+    if (handle == INVALID_HANDLE_VALUE || handle == nullptr) {
+      Logger::warn("getSurfaceExternalMemory: surface is not shareable; it must be created "
+                   "with a non-null pSharedHandle");
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    const DxvkImageCreateInfo& info = image->info();
+
+    *out_info = {};
+    out_info->handle = reinterpret_cast<uint64_t>(handle);
+    out_info->memorySize = static_cast<uint64_t>(image->memSize());
+    // Shared images take a dedicated allocation, so the image starts at 0. Reported
+    // rather than assumed so a future change to the allocator surfaces here.
+    out_info->memoryOffset = 0;
+    out_info->handleType = static_cast<uint32_t>(info.sharing.type);
+    out_info->format = static_cast<uint32_t>(info.format);
+    out_info->width = info.extent.width;
+    out_info->height = info.extent.height;
+    out_info->optimalTiling = (info.tiling == VK_IMAGE_TILING_OPTIMAL) ? 1u : 0u;
+
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  // ---------------------------------------------------------------------------
   // dxvkGetTextureHash (migration #7b)
   //
   // Retrieves the D3D9CommonTexture from the D3D9 texture pointer, gets the
@@ -776,6 +842,9 @@ namespace fork_hooks {
     interf.RegisterCallbacks              = remixapi_RegisterCallbacks;
     interf.AutoInstancePersistentLights   = remixapi_AutoInstancePersistentLights;
     interf.UpdateLightDefinition          = remixapi_UpdateLightDefinition;
+    // dxvk_GetSurfaceExternalMemory is assigned inline in rtx_remix_api.cpp instead:
+    // its entry point lives in that TU's anonymous namespace because it needs the
+    // file-static device, matching the other dxvk_* slots.
   }
 
   // ---------------------------------------------------------------------------

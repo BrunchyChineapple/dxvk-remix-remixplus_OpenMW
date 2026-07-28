@@ -1856,6 +1856,12 @@ namespace {
     return dxvk::fork_hooks::getSharedD3D11TextureHandle(remixDevice, out_sharedHandle, out_width, out_height);
   }
 
+  remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_GetSurfaceExternalMemory(
+    IDirect3DSurface9* surface,
+    remixapi_dxvk_ExternalMemoryInfo* out_info) {
+    return dxvk::fork_hooks::getSurfaceExternalMemory(tryAsDxvk(), surface, out_info);
+  }
+
   remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_GetVkImage(
     IDirect3DSurface9* source,
     uint64_t* out_vkImage) {
@@ -2593,6 +2599,7 @@ extern "C"
       interf.dxvk_RegisterD3D9Device = remixapi_dxvk_RegisterD3D9Device;
       interf.dxvk_GetExternalSwapchain = remixapi_dxvk_GetExternalSwapchain;
       interf.dxvk_GetVkImage = remixapi_dxvk_GetVkImage;
+      interf.dxvk_GetSurfaceExternalMemory = remixapi_dxvk_GetSurfaceExternalMemory;
       interf.dxvk_CopyRenderingOutput = remixapi_dxvk_CopyRenderingOutput;
       interf.dxvk_SetDefaultOutput = remixapi_dxvk_SetDefaultOutput;
       interf.pick_RequestObjectPicking = remixapi_pick_RequestObjectPicking;
@@ -2617,7 +2624,10 @@ extern "C"
       // Fork-added vtable slots (extern-C exported; delegated to fork hook)
       dxvk::fork_hooks::remixApiVtableInit(interf);
     }
-    static_assert(sizeof(interf) == 328, "Add/remove function registration");
+    // 328 -> 336: dxvk_GetSurfaceExternalMemory appended for the OpenMW host.
+    // Appending is source- and binary-compatible for existing callers, so the API
+    // minor is deliberately NOT bumped -- older clients simply never read the slot.
+    static_assert(sizeof(interf) == 336, "Add/remove function registration");
 
     *out_result = interf;
     return REMIXAPI_ERROR_CODE_SUCCESS;
