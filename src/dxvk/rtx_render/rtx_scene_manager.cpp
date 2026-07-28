@@ -2474,6 +2474,29 @@ namespace dxvk {
           material != nullptr ? MaterialData(*material) : LegacyMaterialData().as<OpaqueMaterialData>(),
           existingInstance, pParticles);
 
+      {
+        // Reports what the runtime actually made of this draw. See fork_hooks::ExternalDrawReport --
+        // none of this is observable from the API side, which is why an API host can watch healthy
+        // submit counts produce an empty image.
+        fork_hooks::ExternalDrawReport report {};
+        report.accepted = instance != nullptr;
+        report.meshHash = meshHash;
+        report.vertexCount = submeshes[i].vertexCount;
+        report.indexCount = submeshes[i].indexCount;
+        const Vector3 reportPos = state.drawCall.transformData.objectToWorld[3].xyz();
+        report.worldPos[0] = reportPos.x;
+        report.worldPos[1] = reportPos.y;
+        report.worldPos[2] = reportPos.z;
+        if (instance != nullptr) {
+          report.instanceMask = instance->getVkInstance().mask;
+          report.hidden = instance->isHidden();
+          report.fullyOpaque = instance->surface.alphaState.isFullyOpaque;
+          report.alphaTestType = static_cast<uint32_t>(instance->surface.alphaState.alphaTestType);
+        }
+        report.tlasSurfaceCount = m_accelManager.getSurfaceCount();
+        fork_hooks::noteExternalDraw(report);
+      }
+
       if (instance != nullptr) {
         if (replacementInstance->root.getUntyped() == nullptr) {
           replacementInstance->setup(PrimInstance(instance, PrimInstance::Type::Instance), submeshes.size(), nullptr);
