@@ -994,6 +994,54 @@ extern "C" {
   typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_GetVramStats)(
     remixapi_VramStats* out_stats);
 
+  // Everything OpenGL (or any other external API) needs to import a Remix-owned
+  // D3D9 surface as its own texture.
+  //
+  // Motivation: a host that owns its window and presents through a non-Vulkan API
+  // cannot use dxvk_GetExternalSwapchain for this. That returns a raw VkImage
+  // handle, which is a driver-internal object with no cross-API meaning --
+  // GL_EXT_memory_object_win32 imports a Win32 handle exported from the backing
+  // VkDeviceMemory, not an image. Nor can it use WGL_NV_DX_interop2, because that
+  // expects a device from the native D3D driver and Remix's IDirect3DDevice9Ex is
+  // DXVK over Vulkan.
+  //
+  // What works is the surface's own exportable allocation. A surface created via
+  // CreateRenderTarget/CreateTexture with a non-null pSharedHandle is allocated
+  // with VkExportMemoryAllocateInfo and a dedicated VkMemoryDedicatedAllocateInfo,
+  // so it has a real Win32 handle and lives alone in its allocation. The caller
+  // still cannot derive `memorySize`: Vulkan allocation sizes are driver-padded, so
+  // it cannot be computed from width/height/format, and glTextureStorageMem2DEXT
+  // requires it. Hence this call.
+  //
+  // Typical use: create a shared render target, blit into it each frame with
+  // dxvk_CopyRenderingOutput, then import it once with this info and sample it.
+  //
+  // `handleType` is VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT, which
+  // corresponds to GL_HANDLE_TYPE_OPAQUE_WIN32_KMT_EXT. `memoryOffset` is always 0
+  // while allocations stay dedicated, but is reported rather than assumed.
+  // `optimalTiling` selects between GL_OPTIMAL_TILING_EXT and GL_LINEAR_TILING_EXT.
+  //
+  // The handle is owned by Remix and must NOT be closed by the caller; it stays
+  // valid for the lifetime of the surface.
+  //
+  // Returns INVALID_ARGUMENTS for null pointers, GENERAL_FAILURE if the surface was
+  // not created shareable (no pSharedHandle at creation time, or the driver refused
+  // to share that format/tiling/usage combination).
+  typedef struct remixapi_dxvk_ExternalMemoryInfo {
+    uint64_t      handle;
+    uint64_t      memorySize;
+    uint64_t      memoryOffset;
+    uint32_t      handleType;    // VkExternalMemoryHandleTypeFlagBits
+    uint32_t      format;        // VkFormat
+    uint32_t      width;
+    uint32_t      height;
+    remixapi_Bool optimalTiling;
+  } remixapi_dxvk_ExternalMemoryInfo;
+
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_dxvk_GetSurfaceExternalMemory)(
+    IDirect3DSurface9*                surface,
+    remixapi_dxvk_ExternalMemoryInfo* out_info);
+
   // NOTE: If adding a new function, append it at the END of the struct.
   //       Reordering or inserting in the middle breaks backwards compatibility.
   typedef struct remixapi_Interface {
@@ -1054,6 +1102,9 @@ extern "C" {
     PFN_remixapi_GetVramStats               GetVramStats;
     PFN_remixapi_RequestTextureVramFree     RequestTextureVramFree;
     PFN_remixapi_GetGameValue               GetGameValue;
+    // Appended for the OpenMW host, which composites Remix output into its own
+    // OpenGL frame instead of letting Remix present. Must stay last.
+    PFN_remixapi_dxvk_GetSurfaceExternalMemory dxvk_GetSurfaceExternalMemory;
   } remixapi_Interface;
 
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(

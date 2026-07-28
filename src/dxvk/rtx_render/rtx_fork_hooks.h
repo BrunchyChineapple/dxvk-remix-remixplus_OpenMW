@@ -346,6 +346,20 @@ namespace dxvk {
     // Implementation in rtx_fork_api_entry.cpp.
     remixapi_ErrorCode setUiState(D3D9DeviceEx* remixDevice, remixapi_UIState state);
 
+    // Reports the exportable Win32 handle, dedicated-allocation size, tiling and
+    // format behind a shared D3D9 surface, so a host owning its own window can
+    // import Remix output into another API (OpenGL, for the OpenMW integration).
+    // The surface must have been created with a non-null pSharedHandle. Only the
+    // allocation size genuinely needs renderer-side help: Vulkan pads allocations
+    // per driver, so the caller cannot derive it, and glTextureStorageMem2DEXT
+    // requires it exactly. The handle stays owned by Remix.
+    // No private-member access; no friend declaration needed.
+    // Implementation in rtx_fork_api_entry.cpp.
+    remixapi_ErrorCode getSurfaceExternalMemory(
+      D3D9DeviceEx*                     remixDevice,
+      IDirect3DSurface9*                surface,
+      remixapi_dxvk_ExternalMemoryInfo* out_info);
+
     // Stub: the DX11 shared-memory export backbuffer path is not ported to this
     // fork. Validates arguments then returns GENERAL_FAILURE so callers fall back;
     // the vtable slot is populated so the struct layout matches the plugin ABI.
