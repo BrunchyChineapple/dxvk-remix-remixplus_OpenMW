@@ -1862,6 +1862,14 @@ namespace {
     return dxvk::fork_hooks::getSurfaceExternalMemory(tryAsDxvk(), surface, out_info);
   }
 
+  remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_SetDevMenuWindow(void* hwnd) {
+    std::lock_guard lock { s_mutex };
+    // Deliberately no device check: this only records which window the overlay should measure and
+    // hit-test against, so it is useful to call before or after device registration.
+    dxvk::fork_hooks::enableDevMenuOverlay(static_cast<HWND>(hwnd), true);
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
   remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_GetOutputSyncSemaphores(
     remixapi_dxvk_OutputSyncInfo* out_info) {
     std::lock_guard lock { s_mutex };
@@ -2619,6 +2627,7 @@ extern "C"
       interf.dxvk_GetSurfaceExternalMemory = remixapi_dxvk_GetSurfaceExternalMemory;
       interf.dxvk_GetOutputSyncSemaphores = remixapi_dxvk_GetOutputSyncSemaphores;
       interf.dxvk_CopyRenderingOutputSynced = remixapi_dxvk_CopyRenderingOutputSynced;
+      interf.dxvk_SetDevMenuWindow = remixapi_dxvk_SetDevMenuWindow;
       interf.dxvk_CopyRenderingOutput = remixapi_dxvk_CopyRenderingOutput;
       interf.dxvk_SetDefaultOutput = remixapi_dxvk_SetDefaultOutput;
       interf.pick_RequestObjectPicking = remixapi_pick_RequestObjectPicking;
@@ -2646,9 +2655,11 @@ extern "C"
     // 328 -> 336: dxvk_GetSurfaceExternalMemory appended for the OpenMW host.
     // 336 -> 352: dxvk_GetOutputSyncSemaphores + dxvk_CopyRenderingOutputSynced appended for the
     // same host, so its OpenGL consumer can order its sampling against Remix's copy.
+    // 352 -> 360: dxvk_SetDevMenuWindow, so that host can point the developer menu's input at the
+    // window the user actually sees rather than the one the swapchain happens to sit on.
     // Appending is source- and binary-compatible for existing callers, so the API
     // minor is deliberately NOT bumped -- older clients simply never read the slot.
-    static_assert(sizeof(interf) == 352, "Add/remove function registration");
+    static_assert(sizeof(interf) == 360, "Add/remove function registration");
 
     *out_result = interf;
     return REMIXAPI_ERROR_CODE_SUCCESS;

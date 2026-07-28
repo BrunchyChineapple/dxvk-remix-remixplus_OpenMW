@@ -323,9 +323,27 @@ namespace fork_hooks {
   // below exists to cope with.
   // ---------------------------------------------------------------------------
   static std::atomic<HWND> s_devMenuOverlayHwnd { nullptr };
+  // Distinguishes "the host nominated this window" from "we fell back to the swapchain's window", so
+  // the per-frame fallback cannot overwrite an explicit choice.
+  static std::atomic<bool> s_devMenuOverlayHwndExplicit { false };
 
-  void enableDevMenuOverlay(HWND hostWindow) {
+  void enableDevMenuOverlay(HWND hostWindow, bool overrideExisting) {
+    if (!overrideExisting) {
+      // Fallback path, armed every frame by the copy entry point. Only fills a gap; never displaces
+      // either an explicit nomination or an earlier fallback, so the window cannot change underneath
+      // ImGui once it has been initialised with one.
+      if (s_devMenuOverlayHwndExplicit.load(std::memory_order_relaxed)
+          || s_devMenuOverlayHwnd.load(std::memory_order_relaxed) != nullptr) {
+        return;
+      }
+      s_devMenuOverlayHwnd.store(hostWindow, std::memory_order_relaxed);
+      return;
+    }
+
     s_devMenuOverlayHwnd.store(hostWindow, std::memory_order_relaxed);
+    s_devMenuOverlayHwndExplicit.store(hostWindow != nullptr, std::memory_order_relaxed);
+    Logger::info(str::format("Dev menu overlay bound to host window ", hostWindow,
+                             " for display size and mouse hit-testing"));
   }
 
   void dispatchDevMenuOverlay(RtxContext& ctx, Resources::RaytracingOutput& rtOutput) {
