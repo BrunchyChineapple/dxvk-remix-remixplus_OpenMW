@@ -1853,6 +1853,23 @@ namespace {
     return dxvk::fork_hooks::getSurfaceExternalMemory(tryAsDxvk(), surface, out_info);
   }
 
+  remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_GetOutputSyncSemaphores(
+    remixapi_dxvk_OutputSyncInfo* out_info) {
+    std::lock_guard lock { s_mutex };
+    return dxvk::fork_hooks::getOutputSyncSemaphores(tryAsDxvk(), out_info);
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_CopyRenderingOutputSynced(
+    IDirect3DSurface9* destination,
+    remixapi_dxvk_CopyRenderingOutputType type,
+    remixapi_Bool waitForConsumer) {
+    // Same mutex the unsynchronised copy takes, for the same reason: the fork hook calls EmitCs and
+    // relies on the caller for serialisation.
+    std::lock_guard lock { s_mutex };
+    return dxvk::fork_hooks::copyRenderingOutputSynced(
+      tryAsDxvk(), destination, type, waitForConsumer != 0);
+  }
+
   remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_GetVkImage(
     IDirect3DSurface9* source,
     uint64_t* out_vkImage) {
@@ -2564,6 +2581,8 @@ extern "C"
       interf.dxvk_GetExternalSwapchain = remixapi_dxvk_GetExternalSwapchain;
       interf.dxvk_GetVkImage = remixapi_dxvk_GetVkImage;
       interf.dxvk_GetSurfaceExternalMemory = remixapi_dxvk_GetSurfaceExternalMemory;
+      interf.dxvk_GetOutputSyncSemaphores = remixapi_dxvk_GetOutputSyncSemaphores;
+      interf.dxvk_CopyRenderingOutputSynced = remixapi_dxvk_CopyRenderingOutputSynced;
       interf.dxvk_CopyRenderingOutput = remixapi_dxvk_CopyRenderingOutput;
       interf.dxvk_SetDefaultOutput = remixapi_dxvk_SetDefaultOutput;
       interf.pick_RequestObjectPicking = remixapi_pick_RequestObjectPicking;
@@ -2589,9 +2608,11 @@ extern "C"
       dxvk::fork_hooks::remixApiVtableInit(interf);
     }
     // 328 -> 336: dxvk_GetSurfaceExternalMemory appended for the OpenMW host.
+    // 336 -> 352: dxvk_GetOutputSyncSemaphores + dxvk_CopyRenderingOutputSynced appended for the
+    // same host, so its OpenGL consumer can order its sampling against Remix's copy.
     // Appending is source- and binary-compatible for existing callers, so the API
     // minor is deliberately NOT bumped -- older clients simply never read the slot.
-    static_assert(sizeof(interf) == 336, "Add/remove function registration");
+    static_assert(sizeof(interf) == 352, "Add/remove function registration");
 
     *out_result = interf;
     return REMIXAPI_ERROR_CODE_SUCCESS;

@@ -26,6 +26,9 @@
 #include "rtx_context.h"              // RtxContext
 #include "rtx_resources.h"            // Resources::RaytracingOutput
 #include "rtx_shader_manager.h"       // ManagedShader, SHADER_SOURCE, PUSH_CONSTANTS macros
+#include "imgui/dxvk_imgui.h"         // ImGUI::render (dispatchDevMenuOverlay)
+#include "../dxvk_objects.h"          // DxvkCommonObjects::getImgui
+#include <atomic>
 #include "rtx/pass/screen_overlay/screen_overlay.h"
 #include <rtx_shaders/screen_overlay.h>
 
@@ -286,6 +289,76 @@ namespace fork_hooks {
 
     // Clear pending overlay after dispatch
     ctx.m_pendingScreenOverlay.reset();
+  }
+
+  // ---------------------------------------------------------------------------
+  // enableDevMenuOverlay / dispatchDevMenuOverlay (fork addition, 2026-07-28)
+  //
+  // The developer menu is normally rasterised in D3D9SwapChainEx::PresentImage,
+  // into the WSI swapchain image and only after the backbuffer has been blitted
+  // into it. Two consequences for a host that consumes Remix's output through
+  // dxvk_CopyRenderingOutput* instead of presenting:
+  //
+  //   - the copy reads rtOutput.m_finalOutput, which is finished earlier in the
+  //     frame, so it never contains the overlay; and
+  //   - if that host's presenter never runs, PresentImage never runs either, so
+  //     the overlay is not drawn anywhere at all and ImGui is never initialised.
+  //
+  // So draw it into m_finalOutput from inside the injectRTX chain, which does run.
+  // m_finalOutput carries VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT (rtx_resources.cpp),
+  // so it can be bound as a render target directly -- no intermediate image and no
+  // compute composite, unlike the screen-overlay path above which starts from a
+  // CPU buffer.
+  //
+  // Opt-in, and deliberately not through a config string: a config value that fails
+  // to parse is indistinguishable from success at this API. The flag is armed by
+  // the first dxvk_CopyRenderingOutputSynced call instead, which is an unambiguous
+  // signal that an API-only host is consuming the output. Games that present
+  // normally never call it, so they see no second ImGui frame and no change to
+  // their present path.
+  //
+  // Note this makes the render thread the sole driver of the ImGui frame for such a
+  // host. That is not a new thread boundary for this fork: GameOverlay already
+  // feeds ImGui input from its own window thread, which is what imguiContextPin
+  // below exists to cope with.
+  // ---------------------------------------------------------------------------
+  static std::atomic<HWND> s_devMenuOverlayHwnd { nullptr };
+
+  void enableDevMenuOverlay(HWND hostWindow) {
+    s_devMenuOverlayHwnd.store(hostWindow, std::memory_order_relaxed);
+  }
+
+  void dispatchDevMenuOverlay(RtxContext& ctx, Resources::RaytracingOutput& rtOutput) {
+    HWND hostWindow = s_devMenuOverlayHwnd.load(std::memory_order_relaxed);
+    if (hostWindow == nullptr) {
+      return;
+    }
+
+    auto& finalOutput = rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite);
+    if (finalOutput.view == nullptr || finalOutput.image == nullptr) {
+      return;
+    }
+
+    ScopedGpuProfileZone(&ctx, "Dev Menu Overlay");
+
+    const VkExtent3D extent = finalOutput.image->info().extent;
+
+    // ImGui draws through the graphics pipeline and needs a colour attachment bound.
+    // ImGui_ImplDxvk::RenderDrawData deliberately binds none of its own: on the present path the
+    // blitter has already bound the WSI image and ImGui simply inherits it.
+    DxvkRenderTargets targets = {};
+    targets.color[0].view = finalOutput.view;
+    targets.color[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    ctx.bindRenderTargets(targets);
+
+    // The vsync argument only feeds the menu's own frame-pacing readout, so it is cosmetic here.
+    // Wrapping the context in an Rc is safe: the device holds a reference for the whole frame, so the
+    // temporary cannot take the count to zero.
+    ImGUI& gui = ctx.getCommonObjects()->getImgui();
+    gui.render(hostWindow, Rc<DxvkContext>(&ctx), VkExtent2D { extent.width, extent.height }, false);
+
+    // Previous render targets are not restored. Everything else in this part of injectRTX is compute,
+    // and the next graphics work -- "Blit to Game" -- binds its own targets.
   }
 
   // ---------------------------------------------------------------------------

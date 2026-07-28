@@ -252,7 +252,10 @@ namespace remix {
       // 328 -> 336: dxvk_GetSurfaceExternalMemory appended to the C vtable for the
       // OpenMW host. No C++ wrapper method is added for it deliberately -- that host
       // consumes the C API directly, and the wrapper's surface stays as it was.
-      static_assert(sizeof(remixapi_Interface) == 336,
+      // 336 -> 352: dxvk_GetOutputSyncSemaphores and dxvk_CopyRenderingOutputSynced
+      // appended for the same host, so its OpenGL consumer can order its sampling
+      // against Remix's copy. Same reasoning -- no C++ wrapper methods.
+      static_assert(sizeof(remixapi_Interface) == 352,
                     "Change version, update C++ wrapper when adding new functions");
 
       remix::Interface interfaceInCpp = {};

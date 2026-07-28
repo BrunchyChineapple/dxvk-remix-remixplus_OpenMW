@@ -1042,6 +1042,44 @@ extern "C" {
     IDirect3DSurface9*                surface,
     remixapi_dxvk_ExternalMemoryInfo* out_info);
 
+
+  // Win32 handles for the semaphore pair that orders Remix's copy into a shared surface against
+  // another API's sampling of it. Both are BINARY semaphores exported with
+  // VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT -- note this differs from the surface memory
+  // handle, which is OPAQUE_WIN32_KMT. An importer must use the matching handle type for each.
+  //
+  // The handles belong to Remix and are closed when the runtime shuts down. Importers must not
+  // close them. OpenGL's glImportSemaphoreWin32HandleEXT references rather than takes ownership,
+  // which is what makes that safe.
+  typedef struct remixapi_dxvk_OutputSyncInfo {
+    // Remix signals this after the copy into the shared surface has completed.
+    // The consumer waits on it before sampling.
+    uint64_t copyComplete;
+    // The consumer signals this once it has finished sampling the shared surface.
+    // Remix waits on it before overwriting the surface again.
+    uint64_t consumerDone;
+  } remixapi_dxvk_OutputSyncInfo;
+
+  // Creates (on first call) and reports the output-synchronisation semaphore pair.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_dxvk_GetOutputSyncSemaphores)(
+    remixapi_dxvk_OutputSyncInfo* out_info);
+
+  // As dxvk_CopyRenderingOutput, but ordered against a foreign API through the semaphore pair
+  // above: optionally waits on 'consumerDone', performs the copy, then signals 'copyComplete'.
+  //
+  // Without this, a consumer in another API samples the shared surface with no ordering guarantee
+  // at all. That is undefined under GL_EXT_memory_object and in practice reads as black.
+  //
+  // waitForConsumer MUST be false unless the consumer really did signal 'consumerDone' since the
+  // previous call. These are binary semaphores, so an unmatched wait blocks Remix's render thread
+  // indefinitely -- there is no timeline equivalent available to OpenGL. Only the caller knows
+  // whether its consumer ran, so the decision is deliberately left to the caller rather than
+  // guessed at here. Pass false on the first call and on any frame the consumer skipped.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_dxvk_CopyRenderingOutputSynced)(
+    IDirect3DSurface9*                    destination,
+    remixapi_dxvk_CopyRenderingOutputType type,
+    remixapi_Bool                         waitForConsumer);
+
   // NOTE: If adding a new function, append it at the END of the struct.
   //       Reordering or inserting in the middle breaks backwards compatibility.
   typedef struct remixapi_Interface {
@@ -1104,7 +1142,9 @@ extern "C" {
     PFN_remixapi_GetGameValue               GetGameValue;
     // Appended for the OpenMW host, which composites Remix output into its own
     // OpenGL frame instead of letting Remix present. Must stay last.
-    PFN_remixapi_dxvk_GetSurfaceExternalMemory dxvk_GetSurfaceExternalMemory;
+    PFN_remixapi_dxvk_GetSurfaceExternalMemory  dxvk_GetSurfaceExternalMemory;
+    PFN_remixapi_dxvk_GetOutputSyncSemaphores   dxvk_GetOutputSyncSemaphores;
+    PFN_remixapi_dxvk_CopyRenderingOutputSynced dxvk_CopyRenderingOutputSynced;
   } remixapi_Interface;
 
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(

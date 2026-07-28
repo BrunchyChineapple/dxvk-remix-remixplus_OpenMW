@@ -771,6 +771,11 @@ namespace dxvk {
         // Composite screen overlay (from external C API) after tone mapping, before screenshot capture.
         dispatchScreenOverlay(rtOutput);
 
+        // Draw the developer menu into the output image, for a host that consumes the output through
+        // the copy API instead of presenting -- the normal overlay draw lives in the present path and
+        // is unreachable for such a host. No-op unless that host has armed it.
+        fork_hooks::dispatchDevMenuOverlay(*this, rtOutput);
+
         if (captureScreenImage) {
           if (m_common->metaDebugView().debugViewIdx() == DEBUG_VIEW_DISABLED) {
             takeScreenshot("rtxImagePostTonemapping", rtOutput.m_finalOutput.resource(Resources::AccessType::Read).image);
