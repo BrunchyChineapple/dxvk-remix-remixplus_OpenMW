@@ -934,17 +934,53 @@ namespace dxvk {
       showReflexLatencyStats();
     }
 
+    // Windows' cursor visibility is a counter, not a flag, and the menu drives it far negative to force
+    // its own cursor to be the only one. Nothing used to put it back, so closing the menu left the
+    // counter deep in the negatives and the operating-system cursor hidden for the rest of the session.
+    // A host that shows its cursor with a single ShowCursor(TRUE) -- which is what SDL does, so what
+    // OpenMW does -- cannot climb back out of that, and its mouse pointer simply never returns.
+    //
+    // So count the decrements and undo exactly that many. Not a blanket "force visible" on close: the
+    // game may legitimately want its cursor hidden, and this must restore the state it found rather than
+    // impose one.
+    static int s_cursorHidesApplied = 0;
+
     if (showUI == UIType::None) {
       ImGui::CloseCurrentPopup();
       ImGui::GetIO().MouseDrawCursor = false;
+      while (s_cursorHidesApplied > 0) {
+        ShowCursor(TRUE);
+        --s_cursorHidesApplied;
+      }
     } else {
       if (RtxOptions::showUICursor()) {
         ImGui::GetIO().MouseDrawCursor = true;
-        // Force display counter into invisible state
-        while (ShowCursor(FALSE) >= 0) { }
+        // Force display counter into invisible state.
+        //
+        // Counted with the call in the loop body rather than the condition. The idiomatic
+        // "while (ShowCursor(FALSE) >= 0) {}" performs one more decrement than its body sees -- the call
+        // that finally drives the counter negative -- so tallying inside the body loses exactly one every
+        // time, and loses the *only* one when the cursor was already hidden. Each menu opening then
+        // leaked a decrement, the counter drifted further negative, and a host that reveals its cursor
+        // with a single ShowCursor(TRUE) -- which is what SDL does, and OpenMW uses real hardware cursors
+        // through SDL -- could never get it back.
+        for (;;) {
+          const int counter = ShowCursor(FALSE);
+          ++s_cursorHidesApplied;
+          if (counter < 0) {
+            break;
+          }
+        }
       } else {
-        // Force display counter into visible state
-        while (ShowCursor(TRUE) < 0) {  }
+        // Force display counter into visible state, undoing our own tally as we go.
+        for (;;) {
+          if (ShowCursor(TRUE) >= 0) {
+            break;
+          }
+          if (s_cursorHidesApplied > 0) {
+            --s_cursorHidesApplied;
+          }
+        }
       }
     }
 
