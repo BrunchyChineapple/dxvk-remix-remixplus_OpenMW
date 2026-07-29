@@ -432,11 +432,21 @@ namespace fork_hooks {
     targets.color[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     ctx.bindRenderTargets(targets);
 
-    // The vsync argument only feeds the menu's own frame-pacing readout, so it is cosmetic here.
     // Wrapping the context in an Rc is safe: the device holds a reference for the whole frame, so the
     // temporary cannot take the count to zero.
+    //
+    // render() no longer takes a window or a vsync flag. It reads the window from
+    // getCommonObjects()->getLastKnownWindowHandle() and derives DisplaySize from the surface extent
+    // passed here, both of which suit this path: the handle is set from the presenter
+    // (dxvk_device.cpp), which exists even for a host that never shows that swapchain, and the extent is
+    // the image we are about to draw into.
+    //
+    // hostWindow is therefore no longer handed to ImGui, and does not need to be. It is still what arms
+    // this function, and pollDevMenuMouse still resolves the cursor against it -- the window ImGui's
+    // backend holds and the window the host draws in are allowed to differ here, because nothing left in
+    // this path derives geometry from the former.
     ImGUI& gui = ctx.getCommonObjects()->getImgui();
-    gui.render(hostWindow, Rc<DxvkContext>(&ctx), VkExtent2D { extent.width, extent.height }, false);
+    gui.render(Rc<DxvkContext>(&ctx), VkExtent2D { extent.width, extent.height });
 
     // Previous render targets are not restored. Everything else in this part of injectRTX is compute,
     // and the next graphics work -- "Blit to Game" -- binds its own targets.

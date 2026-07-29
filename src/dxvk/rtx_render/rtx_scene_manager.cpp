@@ -2494,8 +2494,9 @@ namespace dxvk {
       // from geometryData (rtx_geometry_utils.cpp), which was always right. Only consumers that trust
       // SkinningData saw the zero -- the game capturer being the one that found it, silently emitting
       // skinned meshes with no weights or indices at all.
-      if (state.drawCall.skinningData.numBones > 0) {
-        state.drawCall.skinningData.numBonesPerVertex = state.drawCall.geometryData.numBonesPerVertex;
+      if (state.drawCall.getSkinningState().numBones > 0) {
+        state.drawCall.modifySkinningData().numBonesPerVertex
+          = state.drawCall.getGeometryData().numBonesPerVertex;
       }
 
       XXH64_hash_t textureHash = 0;
@@ -2533,7 +2534,7 @@ namespace dxvk {
         report.meshHash = meshHash;
         report.vertexCount = submeshes[i].vertexCount;
         report.indexCount = submeshes[i].indexCount;
-        const Vector3 reportPos = state.drawCall.transformData.objectToWorld[3].xyz();
+        const Vector3 reportPos = state.drawCall.getTransformData().objectToWorld[3].xyz();
         report.worldPos[0] = reportPos.x;
         report.worldPos[1] = reportPos.y;
         report.worldPos[2] = reportPos.z;

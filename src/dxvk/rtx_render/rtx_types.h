@@ -719,6 +719,16 @@ struct DrawCallState {
     return skinningData;
   }
 
+  // Completes the get/modify pair the other members already have. Added because an API-submitted draw
+  // has to correct numBonesPerVertex after the fact: the API path builds SkinningData from
+  // InstanceInfoBoneTransformsEXT before any geometry is attached, so it copies a zero, and only the
+  // submesh assigned later carries the real count. Rendering never noticed -- the skinning dispatch
+  // reads the count from geometry -- but anything trusting SkinningData saw the zero, which is how the
+  // capturer came to emit skinned meshes with no weights at all.
+  SkinningData& modifySkinningData() {
+    return skinningData;
+  }
+
   const FogState& getFogState() const {
     return fogState;
   }
