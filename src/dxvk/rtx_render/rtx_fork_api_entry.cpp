@@ -791,9 +791,42 @@ namespace fork_hooks {
       return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
     }
 
+    // Reconcile the caller's byte count with what the declared format, extent and mip count require.
+    //
+    // dataSize is used for two things that must agree: the staging buffer's size, and the length of the
+    // memcpy out of the caller's memory. An overstated value therefore walks the copy off the end of the
+    // staging mapping and takes the runtime down inside memcpy, with nothing in the stack to say which
+    // texture was at fault. That is a bad failure mode for an entry point whose whole job is to accept a
+    // pointer and a length from outside.
+    //
+    // The upload loop below never reads beyond the required size, so clamping down to it is lossless.
+    // Falling short of even the base level, on the other hand, cannot be salvaged.
+    VkDeviceSize requiredSize = 0;
+    for (uint32_t mip = 0; mip < imageInfo.mipLevels; ++mip) {
+      requiredSize += util::computeImageDataSize(vkFormat, util::computeMipLevelExtent(imageInfo.extent, mip));
+    }
+    const VkDeviceSize baseLevelSize = util::computeImageDataSize(vkFormat, imageInfo.extent);
+
+    if (info->dataSize < baseLevelSize) {
+      Logger::err(str::format("CreateTexture: dataSize ", info->dataSize,
+                              " is smaller than the ", baseLevelSize,
+                              " bytes the base level needs for a ", info->width, "x", info->height,
+                              " image in format ", uint32_t(info->format)));
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+
+    VkDeviceSize uploadSize = info->dataSize;
+    if (uploadSize > requiredSize) {
+      ONCE(Logger::warn(str::format("CreateTexture: dataSize ", info->dataSize, " exceeds the ",
+                                    requiredSize, " bytes required by the declared format and mip count; "
+                                    "clamping. A caller passing a size larger than its own buffer would "
+                                    "otherwise fault inside the staging copy.")));
+      uploadSize = requiredSize;
+    }
+
     // Create staging buffer for upload.
     DxvkBufferCreateInfo stagingInfo = {};
-    stagingInfo.size   = info->dataSize;
+    stagingInfo.size   = uploadSize;
     stagingInfo.usage  = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     stagingInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT;
     stagingInfo.access = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;
@@ -810,7 +843,7 @@ namespace fork_hooks {
 
     // Copy texture data to staging buffer.
     auto stagingSlice = DxvkBufferSlice { stagingBuffer };
-    memcpy(stagingSlice.mapPtr(0), info->data, info->dataSize);
+    memcpy(stagingSlice.mapPtr(0), info->data, uploadSize);
 
     // Create image view.
     DxvkImageViewCreateInfo viewInfo = {};
@@ -839,7 +872,7 @@ namespace fork_hooks {
       cStagingBuffer = stagingBuffer,
       cBaseExtent    = imageInfo.extent,
       cMipLevels     = imageInfo.mipLevels,
-      cDataSize      = info->dataSize,
+      cDataSize      = uploadSize,
       cFormat        = vkFormat
     ](DxvkContext* ctx) mutable {
 
