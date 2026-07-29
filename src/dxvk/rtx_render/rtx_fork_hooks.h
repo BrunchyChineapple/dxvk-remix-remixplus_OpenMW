@@ -118,9 +118,13 @@ namespace dxvk {
       AssetReplacer& replacer, XXH64_hash_t meshHash);
 
     // Checks for a USD material replacement and updates the material pointer in-place.
+    //
+    // mergeStorage is caller-owned scratch that must outlive the use of `material`: a replacement is
+    // merged over the host's material rather than swapped for it, so the result is a new object that
+    // belongs to neither the replacer nor the caller. Written only when a replacement is found.
     // Implementation in rtx_fork_submit.cpp.
     void externalDrawMaterialReplacement(
-      AssetReplacer& replacer, const MaterialData*& material);
+      AssetReplacer& replacer, const MaterialData*& material, MaterialData& mergeStorage);
 
     // Resolves the albedo texture hash from an API material and auto-applies
     // all texture-based instance categories (Sky, Ignore, WorldUI, etc.).

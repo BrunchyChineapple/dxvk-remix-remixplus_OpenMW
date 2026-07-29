@@ -2501,9 +2501,13 @@ namespace dxvk {
 
       XXH64_hash_t textureHash = 0;
 
+      // Storage for a replacement merged over the host's material. Declared here so it outlives every use
+      // of `material` below, which may point into it. Same pattern as tmpMaterialData in submitDrawState.
+      MaterialData mergedMaterialData;
+
       const MaterialData* material = m_pReplacer->accessExternalMaterial(submeshes[i].externalMaterial);
       if (material != nullptr) {
-        fork_hooks::externalDrawMaterialReplacement(*m_pReplacer, material);
+        fork_hooks::externalDrawMaterialReplacement(*m_pReplacer, material, mergedMaterialData);
 
         state.drawCall.modifyMaterialData().setHashOverride(material->getHash());
 

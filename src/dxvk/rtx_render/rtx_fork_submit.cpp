@@ -46,12 +46,51 @@ namespace fork_hooks {
   // updates the caller's material pointer in-place if one is found.
   // ---------------------------------------------------------------------------
   void externalDrawMaterialReplacement(
-      AssetReplacer& replacer, const MaterialData*& material) {
+      AssetReplacer& replacer, const MaterialData*& material, MaterialData& mergeStorage) {
     // Check for material replacement (matches the D3D9 draw path behavior).
     MaterialData* pReplacementMaterial = replacer.getReplacementMaterial(material->getHash());
-    if (pReplacementMaterial != nullptr) {
-      material = pReplacementMaterial;
+
+    // Then by albedo texture hash, which is what a mat_<hex> key from a capture actually is.
+    //
+    // The two disagree for API materials and that is the whole problem. For a D3D9 draw
+    // LegacyMaterialData::updateCachedHash sets the material hash *to* the albedo image hash, so a
+    // capture names every material after its albedo texture. An API material instead sums every texture
+    // slot and folds in its constants (rtx_material_data.h, WRITE_TEXTURE_HASH / WRITE_CONSTANT_HASH), so
+    // the lookup above can never find a capture-authored key however faithful the host's texture hashes
+    // are -- and a host that reproduces Remix's texture hash exactly, as the OpenMW integration now does,
+    // otherwise gets nothing for it.
+    //
+    // Additive rather than a change of material identity: the summed hash is still tried first, so
+    // materials authored against it keep working, and this only fills in the miss.
+    if (pReplacementMaterial == nullptr && material->getType() == MaterialDataType::Opaque) {
+      const auto& albedo = material->getOpaqueMaterialData().getAlbedoOpacityTexture();
+      if (albedo.isValid()) {
+        const XXH64_hash_t albedoHash = albedo.getImageHash();
+        if (albedoHash != 0 && albedoHash != kEmptyHash) {
+          pReplacementMaterial = replacer.getReplacementMaterial(albedoHash);
+        }
+      }
     }
+
+    if (pReplacementMaterial == nullptr) {
+      return;
+    }
+
+    // Merge over the host's material rather than replacing it, which is what
+    // SceneManager::determineMaterialData does for a D3D9 draw: it copies the replacement and then calls
+    // mergeLegacyMaterial to fold the game's own material back in.
+    //
+    // Swapping wholesale was wrong and visibly so. Most entries in a real replacement pack are partial --
+    // an `over` on a captured material that sets nothing but reflection_roughness_constant, with no
+    // textures at all. merge() assigns from the argument for every field the USD did not explicitly author,
+    // so the pack keeps its roughness and the albedo comes back from the host. Without it, every one of
+    // those partial overrides handed the surface a material with no albedo texture and rendered it black.
+    mergeStorage = *pReplacementMaterial;
+    if (mergeStorage.getType() == MaterialDataType::Opaque
+        && material->getType() == MaterialDataType::Opaque) {
+      mergeStorage.getOpaqueMaterialData().merge(material->getOpaqueMaterialData());
+    }
+    material = &mergeStorage;
   }
 
   // ---------------------------------------------------------------------------
