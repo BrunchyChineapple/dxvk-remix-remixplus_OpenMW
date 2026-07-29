@@ -1263,11 +1263,16 @@ namespace dxvk {
                "0 = physical (use sunSize / 2, so shadow softness tracks the visible disc). When > 0 it "
                "overrides the sun light's half-angle WITHOUT changing the visible sun disc — larger = "
                "softer penumbra, for artistic soft shadows under a small sun.");
-    RTX_OPTION("rtx.atmosphere", float, sunIntensity, 1.0f, "Strength of Sun.");
-    RTX_OPTION("rtx.atmosphere", float, sunElevation, 15.0f,
-               "Sun elevation in degrees. Game-drivable per-frame; persists when saved unless overridden by a runtime push.");
-    RTX_OPTION("rtx.atmosphere", float, sunRotation, 0.0f,
-               "Sun rotation in degrees. Game-drivable per-frame; persists when saved unless overridden by a runtime push.");
+    // NoSave on all three: a host that drives the time of day writes these every frame, and persisting
+    // them means user.conf accumulates whatever the sun happened to be doing at the moment options were
+    // last saved -- which then loads as the cold-start sun and fights the host's first push. Per-frame
+    // state belongs in the derived layer, which is what the flag selects.
+    RTX_OPTION_FLAG("rtx.atmosphere", float, sunIntensity, 1.0f, RtxOptionFlags::NoSave,
+               "Strength of Sun. Game-drivable per-frame; not saved.");
+    RTX_OPTION_FLAG("rtx.atmosphere", float, sunElevation, 15.0f, RtxOptionFlags::NoSave,
+               "Sun elevation in degrees. Game-driven every frame; not saved.");
+    RTX_OPTION_FLAG("rtx.atmosphere", float, sunRotation, 0.0f, RtxOptionFlags::NoSave,
+               "Sun rotation in degrees. Game-driven every frame; not saved.");
     RTX_OPTION("rtx.atmosphere", float, altitude, 100.0f, "Height from sea level in meters.");
     RTX_OPTION("rtx.atmosphere", float, airDensity, 1.0f, "Density of air molecules multiplier (1.0 = clear sky).");
     RTX_OPTION("rtx.atmosphere", float, aerosolDensity, 1.1f, "Density of aerosols/dust multiplier (1.0 = typical).");
@@ -1300,8 +1305,9 @@ namespace dxvk {
 
     // ----- Night-sky shading (fork) -----
     // Stars, Milky Way, shooting stars, airglow. Active when skyMode == Numos.
-    RTX_OPTION("rtx.atmosphere", float, starBrightness, 0.5f,
-               "Overall brightness multiplier for stars. Game-drivable per-frame (plugins can fade stars in/out around sunset/sunrise); persists when saved unless overridden by a runtime push.");
+    RTX_OPTION_FLAG("rtx.atmosphere", float, starBrightness, 0.5f, RtxOptionFlags::NoSave,
+               "Overall brightness multiplier for stars. Game-driven every frame, so a host can fade "
+               "stars in and out around sunrise and sunset; not saved.");
     RTX_OPTION("rtx.atmosphere", float, starDensity, 0.5f,
                "Star density on a linear-feel slider: 0 = no stars, 1 = maximum stars. Internally "
                "maps via pow(starDensity, 4) * 0.05 to a per-cell visible-star fraction, so the "
@@ -1316,8 +1322,9 @@ namespace dxvk {
                "Celestial pole elevation from horizon in degrees. 90 = pole at zenith (default, matches pre-rotation behavior).");
     RTX_OPTION("rtx.atmosphere", float, starAxisRotation, 0.0f,
                "Celestial pole azimuth in degrees (0 = North). Only relevant when starAxisElevation != 90.");
-    RTX_OPTION("rtx.atmosphere", float, nightSkyBrightness, 0.002f,
-               "Ambient night-sky brightness from airglow and zodiacal light.");
+    RTX_OPTION_FLAG("rtx.atmosphere", float, nightSkyBrightness, 0.002f, RtxOptionFlags::NoSave,
+               "Ambient night-sky brightness from airglow and zodiacal light. Game-driven every frame "
+               "so it can be suppressed indoors; not saved.");
     RTX_OPTION("rtx.atmosphere", Vector3, nightSkyColor, Vector3(0.15f, 0.2f, 0.4f),
                "Base color tint of the night-sky airglow.");
     // ----- Milky Way controls (fork) -----
@@ -1371,22 +1378,33 @@ namespace dxvk {
 
     // ----- Per-moon parameters (fork) -----
     // MAX_MOONS in atmosphere_args.h must equal the number of DECLARE_MOON_OPTIONS
-    // invocations below. Default state: all moons disabled - opt-in via game plugin
-    // or rtx.conf. Pose fields (elevation/rotation/phase) are game-drivable per-frame
-    // but also persist when saved (last writer wins during a session; cold start uses
-    // the saved value until any plugin push lands).
-#define DECLARE_MOON_OPTIONS(N)                                                                 \
-    RTX_OPTION("rtx.atmosphere.moon" #N, bool, enabled##N, false,                               \
-               "Enable moon " #N " rendering.");                                                \
-    RTX_OPTION("rtx.atmosphere.moon" #N, float, angularRadius##N, 3.5f,                         \
+    // invocations below.
+    //
+    // Appearance defaults are supplied PER MOON at the expansion site rather than shared, because the
+    // moons of a given world are not interchangeable. Morrowind's Secunda is a small pale disc and Masser
+    // is a large red one; giving both the same radius and albedo produces two identical grey moons that
+    // no amount of config can distinguish without restating every field. Putting the identity in the
+    // source means a host gets the right sky with an empty config.
+    //
+    // The game-driven fields -- enabled, elevation, rotation, phase -- are NoSave. A host that positions
+    // the moons every frame writes these constantly, and without the flag every write is persisted, so
+    // user.conf fills up with a snapshot of wherever the moons happened to be when the game last saved
+    // its options. Those values then load as the cold-start state and fight the host's first pushes.
+    // NoSave routes them to the derived layer, which is where per-frame state belongs.
+#define DECLARE_MOON_OPTIONS(N, DEFAULT_ENABLED, DEFAULT_RADIUS, DEFAULT_BRIGHTNESS, DEFAULT_COLOR, DEFAULT_STYLE) \
+    RTX_OPTION_FLAG("rtx.atmosphere.moon" #N, bool, enabled##N, DEFAULT_ENABLED,                \
+               RtxOptionFlags::NoSave,                                                          \
+               "Enable moon " #N " rendering. Game-drivable per-frame; not saved.");            \
+    RTX_OPTION("rtx.atmosphere.moon" #N, float, angularRadius##N, DEFAULT_RADIUS,               \
                "Moon " #N " angular diameter in degrees.");                                     \
-    RTX_OPTION("rtx.atmosphere.moon" #N, float, brightness##N, 1.0f,                            \
-               "Moon " #N " brightness multiplier. Default 1.0 = physical neutral; "            \
-               ">1 brightens for stylized scenes (e.g. 4.0 reproduces pre-Phase-2 look).");     \
-    RTX_OPTION("rtx.atmosphere.moon" #N, Vector3, color##N, Vector3(0.12f, 0.12f, 0.12f),       \
-               "Moon " #N " surface albedo. Default (0.12, 0.12, 0.12) ≈ Earth's lunar Bond "   \
-               "albedo; raise per-channel for tinted moons (blood-red, sulfur-yellow, etc.).");\
-    RTX_OPTION("rtx.atmosphere.moon" #N, uint32_t, surfaceStyle##N, 0u,                         \
+    RTX_OPTION("rtx.atmosphere.moon" #N, float, brightness##N, DEFAULT_BRIGHTNESS,              \
+               "Moon " #N " brightness multiplier. Per-moon default supplied at the expansion " \
+               "site; 1.0 = physical neutral, raise for stylized scenes.");                     \
+    RTX_OPTION("rtx.atmosphere.moon" #N, Vector3, color##N, DEFAULT_COLOR,                      \
+               "Moon " #N " surface albedo. Per-moon default supplied at the expansion site; "  \
+               "(0.12, 0.12, 0.12) is roughly Earth's lunar Bond albedo, tint per-channel for " \
+               "stylized moons (blood-red, sulfur-yellow, etc.).");                             \
+    RTX_OPTION("rtx.atmosphere.moon" #N, uint32_t, surfaceStyle##N, DEFAULT_STYLE,              \
                "Moon " #N " surface preset: 0 = Rocky, 1 = Volcanic.");                         \
     RTX_OPTION("rtx.atmosphere.moon" #N, float, craterDensity##N, 1.0f,                         \
                "Moon " #N " crater density multiplier [0,1].");                                 \
@@ -1398,17 +1416,23 @@ namespace dxvk {
                "Moon " #N " dark-side brightness as fraction of lit side.");                    \
     RTX_OPTION("rtx.atmosphere.moon" #N, float, roughnessAmount##N, 1.0f,                       \
                "Moon " #N " micro-detail surface roughness amplitude.");                        \
-    RTX_OPTION("rtx.atmosphere.moon" #N, float, elevation##N, 45.0f,                            \
-               "Moon " #N " elevation in degrees. Game-drivable per-frame; persists when saved unless overridden by a runtime push."); \
-    RTX_OPTION("rtx.atmosphere.moon" #N, float, rotation##N, 90.0f,                             \
-               "Moon " #N " rotation in degrees. Game-drivable per-frame; persists when saved unless overridden by a runtime push."); \
-    RTX_OPTION("rtx.atmosphere.moon" #N, float, phase##N, 0.5f,                                 \
-               "Moon " #N " phase [0,1]. Game-drivable per-frame; persists when saved unless overridden by a runtime push.")
+    RTX_OPTION_FLAG("rtx.atmosphere.moon" #N, float, elevation##N, 45.0f,                        \
+               RtxOptionFlags::NoSave,                                                          \
+               "Moon " #N " elevation in degrees. Game-driven every frame; not saved.");         \
+    RTX_OPTION_FLAG("rtx.atmosphere.moon" #N, float, rotation##N, 90.0f,                         \
+               RtxOptionFlags::NoSave,                                                          \
+               "Moon " #N " rotation in degrees. Game-driven every frame; not saved.");          \
+    RTX_OPTION_FLAG("rtx.atmosphere.moon" #N, float, phase##N, 0.5f,                             \
+               RtxOptionFlags::NoSave,                                                          \
+               "Moon " #N " phase [0,1]. Game-driven every frame; not saved.")
 
-    DECLARE_MOON_OPTIONS(0);
-    DECLARE_MOON_OPTIONS(1);
-    DECLARE_MOON_OPTIONS(2);
-    DECLARE_MOON_OPTIONS(3);
+    // Secunda: the small pale disc. Masser: the large red one. Moons 2 and 3 exist for hosts with more
+    // than two and are off by default, seeded with Secunda's appearance so an enable alone gives something
+    // sensible rather than a black circle.
+    DECLARE_MOON_OPTIONS(0, true, 3.5f, 4.0f, Vector3(0.85f, 0.87f, 0.92f), 0u);
+    DECLARE_MOON_OPTIONS(1, true, 10.0f, 3.5f, Vector3(0.65f, 0.18f, 0.22f), 1u);
+    DECLARE_MOON_OPTIONS(2, false, 3.5f, 4.0f, Vector3(0.85f, 0.87f, 0.92f), 0u);
+    DECLARE_MOON_OPTIONS(3, false, 3.5f, 4.0f, Vector3(0.85f, 0.87f, 0.92f), 0u);
 #undef DECLARE_MOON_OPTIONS
 
     // ----- Weather preset declarations (fork, 2026-05-08) -----
@@ -1518,7 +1542,9 @@ namespace dxvk {
                "Composes with moonHaloMagnitude / moonAmbientAirglow for ratio tuning.");
 
     // Cloud parameters (procedural FBM cloud layer)
-    RTX_OPTION("rtx.atmosphere", bool, cloudEnabled, true, "Enable procedural cloud rendering.");
+    RTX_OPTION_FLAG("rtx.atmosphere", bool, cloudEnabled, true, RtxOptionFlags::NoSave,
+               "Enable procedural cloud rendering. Game-driven, since a host turns clouds off indoors; "
+               "not saved.");
     RTX_OPTION("rtx.atmosphere", float, cloudDensity, 4.0f, "Cloud opacity/density multiplier.");
     RTX_OPTION("rtx.atmosphere", float, cloudAltitude, 1.3f, "Cloud layer altitude in kilometers.");
     RTX_OPTION("rtx.atmosphere", Vector3, cloudColor, Vector3(0.89f, 0.92f, 1.0f), "Base cloud color (albedo).");

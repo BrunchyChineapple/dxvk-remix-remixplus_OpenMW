@@ -1628,9 +1628,31 @@ namespace {
       return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
     }
 
+    // Let getTargetLayer choose the destination, rather than naming one.
+    //
+    // This used to pass getUserLayer() explicitly, which turned every config write from a host into a
+    // persisted user preference. For a host driving per-frame state through this entry point -- time of
+    // day, moon positions, weather fog -- that fills user.conf with a snapshot of whatever the sky was
+    // doing when options were last saved. The developer menu then reports them as settings in the wrong
+    // file, migrating them does not help because the next cell transition writes them straight back, and on
+    // the following launch they load as cold-start state and fight the host's first push.
+    //
+    // Passing NO explicit layer is what makes the routing rules apply, and the two arguments are not
+    // interchangeable: getTargetLayer honours an explicit layer over everything except NoSave, so naming
+    // the user layer defeated the routing for every option that was not flagged. That left the host's
+    // startup facts -- scene scale, up axis, sky mode -- still landing in user.conf, because they are
+    // legitimately not NoSave; they are simply not preferences either.
+    //
+    // With no explicit layer the flags decide. NoSave goes to the derived layer. Anything else follows the
+    // edit target, which is thread-local and defaults to Derived precisely for programmatic changes, so a
+    // developer setting written by code lands in the derived layer and a genuine user setting still reaches
+    // the layer a preference belongs in. All of it is the correct answer for a host that re-asserts its
+    // configuration on every launch: none of it needs to survive the process.
+    const dxvk::RtxOptionLayer* targetLayer = option->getTargetLayer();
+
     dxvk::Config newSetting;
     newSetting.setOptionMove(std::move(strKey), std::string{ value });
-    option->readOption(newSetting, dxvk::RtxOptionLayer::getUserLayer());
+    option->readOption(newSetting, targetLayer);
 
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
