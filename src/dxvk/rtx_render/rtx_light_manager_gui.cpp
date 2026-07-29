@@ -115,6 +115,25 @@ namespace dxvk {
 
       separator();
 
+      // Tuning for lights an API host creates, kept visibly apart from the Light Conversion sliders
+      // above. Those act only on lights the runtime converts from legacy D3D9 draws, so for a host
+      // submitting through remixapi_CreateLight they do nothing at all -- and the two pairs are named
+      // almost identically, which has cost real time. The note says which is which.
+      //
+      // Not wrapped in lightSettingsDirty: clearFromUIThread rebuilds the runtime's own light tables,
+      // and these lights are not in them. The host owns their lifecycle and will resubmit with the new
+      // numbers on its next frame.
+      ImGui::Text("External (API) Light settings");
+      ImGui::TextColored(ImVec4 { 0.55f, 0.75f, 0.95f, 1.0f },
+        "For lights created through remixapi_CreateLight. The Light Conversion\n"
+        "sliders above cannot affect these -- they only touch legacy D3D9 lights.");
+      RemixGui::DragFloat("Emitter Radius", &radiusObject(), 0.005f, 0.001f, FLT_MAX, "%.4f",
+                          ImGuiSliderFlags_AlwaysClamp);
+      RemixGui::DragFloat("Intensity Factor##external", &intensityFactorObject(), 0.01f, 0.0f, 8.f,
+                          "%.3f", ImGuiSliderFlags_AlwaysClamp);
+
+      separator();
+
       ImGui::BeginDisabled(disableDirectional);
       ImGui::Text("Distant Light settings");
       lightSettingsDirty |= RemixGui::DragFloat("Fixed Intensity", &lightConversionDistantLightFixedIntensityObject(), 0.01f, 0.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);

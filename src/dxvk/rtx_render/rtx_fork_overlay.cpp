@@ -29,6 +29,8 @@
 #include "rtx_shader_manager.h"       // ManagedShader, SHADER_SOURCE, PUSH_CONSTANTS macros
 #include "imgui/dxvk_imgui.h"         // ImGUI::render (dispatchDevMenuOverlay)
 #include "../dxvk_objects.h"          // DxvkCommonObjects::getImgui
+#include "rtx_scene_manager.h"        // SceneManager::getLightManager (dispatchDevMenuOverlay)
+#include "rtx_light_manager.h"        // LightManager::releaseUILockIfHeld
 #include <atomic>
 #include "rtx/pass/screen_overlay/screen_overlay.h"
 #include <rtx_shaders/screen_overlay.h>
@@ -445,6 +447,20 @@ namespace fork_hooks {
     // this function, and pollDevMenuMouse still resolves the cursor against it -- the window ImGui's
     // backend holds and the window the host draws in are allowed to differ here, because nothing left in
     // this path derives geometry from the former.
+    // The light UI takes a lock_guard on a mutex this thread is already holding, so drop it first.
+    //
+    // LightManager acquires m_lightDebugUILock lazily in addLight, createExternallyTrackedLight and
+    // updateExternallyTrackedLight, and deliberately leaves it held until the next frame's
+    // garbageCollection releases it. clearFromUIThread and the debug-light drawing then lock the same
+    // mutex, which works only while the UI is on a different thread and can wait for it.
+    //
+    // This host has no presenting thread to draw on, so the menu is drawn here, inside injectRTX, on the
+    // render thread -- the one holding the lock. A lock_guard on a non-recursive std::mutex the calling
+    // thread already owns is undefined behaviour, and it took the game down the moment the Light Radius
+    // slider was moved or the light section was drawn. Guaranteed rather than intermittent here, because
+    // the atmosphere pushes its sun and moons through updateExternallyTrackedLight every frame.
+    ctx.getSceneManager().getLightManager().releaseUILockIfHeld();
+
     ImGUI& gui = ctx.getCommonObjects()->getImgui();
     gui.render(Rc<DxvkContext>(&ctx), VkExtent2D { extent.width, extent.height });
 

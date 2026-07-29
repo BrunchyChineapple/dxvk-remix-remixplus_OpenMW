@@ -24,6 +24,7 @@
 #include <cassert>
 
 #include "rtx_fork_hooks.h"
+#include "rtx_fork_game_state.h"      // GameStateStore, for publishing external-light tuning to a host
 #include "rtx_light_manager.h"
 #include "rtx_context.h"
 #include "rtx_options.h"
@@ -90,6 +91,30 @@ namespace dxvk {
     m_lights.clear();
     m_linearizedLights.clear();
     m_lightDebugUILock.unlock();
+  }
+
+  // Mirrors the external-light tuning options into the game-value store, which is how an API host reads
+  // them back. Formatted rather than passed as a float because that store is string-keyed and
+  // string-valued -- the same channel the weather target already travels on.
+  //
+  // Deliberately unconditional: writing when the value has not meaningfully changed costs a short string
+  // and a map assignment, and the alternative is caching the last written value in yet another place.
+  void LightManager::externalLightRadiusOnChange(DxvkDevice* device) {
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%.5f", radius());
+    fork_game_state::GameStateStore::get().set(kExternalLightRadiusKey, buffer);
+  }
+
+  void LightManager::externalLightIntensityOnChange(DxvkDevice* device) {
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%.5f", intensityFactor());
+    fork_game_state::GameStateStore::get().set(kExternalLightIntensityKey, buffer);
+  }
+
+  void LightManager::releaseUILockIfHeld() {
+    if (m_lightDebugUILock.owns_lock()) {
+      m_lightDebugUILock.unlock();
+    }
   }
 
   void LightManager::clearFromUIThread() {

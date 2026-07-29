@@ -129,6 +129,28 @@ public:
   void clear();
   void clearFromUIThread();
 
+  // Drops m_lightDebugUILock if this thread is holding it.
+  //
+  // Exists for a host that draws the developer menu from the render thread. The lock is acquired lazily
+  // by addLight, createExternallyTrackedLight and updateExternallyTrackedLight, which deliberately leave
+  // it held until garbageCollection releases it on the next frame. Everything in the light UI --
+  // clearFromUIThread, and the debug-light drawing in rtx_light_manager_gui.cpp -- then takes a
+  // lock_guard on that same mutex, which is correct only while the UI runs on a DIFFERENT thread and can
+  // simply wait.
+  //
+  // A host consuming Remix's output through the copy API has no presenting thread to draw on, so the
+  // menu is drawn from inside injectRTX -- the render thread, which is the thread holding the lock. A
+  // lock_guard on a non-recursive std::mutex already owned by the calling thread is undefined behaviour,
+  // and it crashed as soon as the light section of the menu was touched. It was guaranteed rather than
+  // intermittent for such a host: the atmosphere's sun and moons go through
+  // updateExternallyTrackedLight every frame, so the lock is always held by the time the menu draws.
+  //
+  // Safe to call before the menu because the frame's light work is finished by then: lights are
+  // submitted before present, the GPU data is built in prepareSceneData, and the atmosphere's lights are
+  // synced earlier in injectRTX. Releasing here also cannot upset garbageCollection, which re-acquires
+  // through its own owns_lock() guard on the next frame.
+  void releaseUILockIfHeld();
+
   void garbageCollection(RtCamera& camera);
 
   void dynamicLightMatching();
@@ -233,6 +255,40 @@ private:
   static void fallbackLightOnChange(DxvkDevice* device) {
     s_fallbackLightDirty = true;
   }
+
+  // ---- Tuning for lights an API host creates, exposed so it can be tuned live ----
+  //
+  // These do NOT act on anything inside the runtime. The runtime cannot: a light submitted through
+  // remixapi_CreateLight arrives with its radius and radiance already decided, and there is no original
+  // value left to scale. The pair exists so a host that DERIVES those numbers -- from a game's own light
+  // definitions, attenuation curves and units -- can be told to derive them differently without a
+  // restart, which is otherwise the only way to retune lighting through an environment variable.
+  //
+  // The mechanism is deliberately not a new API entry point. Each change is mirrored into the fork's
+  // game-value store, which a host already reads through remixapi_GetGameValue, so this costs no vtable
+  // slot and no ABI bump. The host polls the two keys and reapplies; if it is not listening, moving
+  // these does nothing and nothing breaks.
+  //
+  // Distinct from lightConversionSphereLightFixedRadius and lightConversionIntensityFactor next to them,
+  // which apply only to lights the runtime converts from legacy D3D9 draws and therefore cannot affect an
+  // API host's lights at all. Being unable to tell those two pairs apart in the UI is precisely the trap
+  // this is here to remove.
+  static constexpr const char* kExternalLightRadiusKey = "__externalLight.radius";
+  static constexpr const char* kExternalLightIntensityKey = "__externalLight.intensityFactor";
+  static void externalLightRadiusOnChange(DxvkDevice* device);
+  static void externalLightIntensityOnChange(DxvkDevice* device);
+  RTX_OPTION_ARGS("rtx.externalLight", float, radius, 0.6435f,
+                  "Emitter radius, in world units, for lights an API host creates.\n"
+                  "Published to the host through the game-value store; the host decides whether to honour it.\n"
+                  "A sphere light is a volume, so one placed against a wall has part of itself on the far side and leaks into the next room -- prefer raising intensityFactor over enlarging this.",
+                  args.onChangeCallback = &externalLightRadiusOnChange, args.minValue = 0.001f,
+                  args.flags = RtxOptionFlags::NoSave);
+  RTX_OPTION_ARGS("rtx.externalLight", float, intensityFactor, 0.65f,
+                  "Scales the radiance an API host derives for the lights it creates.\n"
+                  "Published to the host through the game-value store; the host decides whether to honour it.\n"
+                  "This is the knob to reach for when the scene is too dim or too bright, rather than the radius.",
+                  args.onChangeCallback = &externalLightIntensityOnChange, args.minValue = 0.0f,
+                  args.flags = RtxOptionFlags::NoSave);
   RTX_OPTION_ARGS("rtx", FallbackLightType, fallbackLightType, FallbackLightType::Distant, "The light type to use for the fallback light. Determines which other fallback light options are used.", args.onChangeCallback = &fallbackLightOnChange);
   RTX_OPTION_ARGS("rtx", Vector3, fallbackLightRadiance, Vector3(1.6f, 1.8f, 2.0f), "The radiance to use for the fallback light (used across all light types).", args.minValue = Vector3(0.0f, 0.0f, 0.0f), args.onChangeCallback = &fallbackLightOnChange);
   RTX_OPTION_ARGS("rtx", Vector3, fallbackLightDirection, Vector3(-0.2f, -1.0f, 0.4f), "The direction to use for the fallback light (used only for Distant light types)", args.onChangeCallback = &fallbackLightOnChange);
