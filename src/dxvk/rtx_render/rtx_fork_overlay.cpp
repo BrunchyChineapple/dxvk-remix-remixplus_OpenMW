@@ -347,6 +347,40 @@ namespace fork_hooks {
                              " for display size and mouse hit-testing"));
   }
 
+  // Extent of the image the menu is drawn into. Written on the render thread by ImGUI::render just
+  // before the frame opens, read on the same thread a few lines later; atomic because the fallback
+  // arming path can also run from the API entry point's thread.
+  static std::atomic<uint32_t> s_devMenuRenderWidth { 0 };
+  static std::atomic<uint32_t> s_devMenuRenderHeight { 0 };
+
+  void setDevMenuRenderExtent(uint32_t width, uint32_t height) {
+    s_devMenuRenderWidth.store(width, std::memory_order_relaxed);
+    s_devMenuRenderHeight.store(height, std::memory_order_relaxed);
+  }
+
+  void applyDevMenuDisplaySize() {
+    if (s_devMenuOverlayHwnd.load(std::memory_order_relaxed) == nullptr) {
+      return;
+    }
+    const float width = static_cast<float>(s_devMenuRenderWidth.load(std::memory_order_relaxed));
+    const float height = static_cast<float>(s_devMenuRenderHeight.load(std::memory_order_relaxed));
+    if (width <= 0.f || height <= 0.f) {
+      return;
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    // Report the disagreement once, because it is the difference between a menu that fits and one whose
+    // edges are cut off, and it is otherwise invisible -- both numbers look plausible on their own.
+    static bool s_reported = false;
+    if (!s_reported && (io.DisplaySize.x != width || io.DisplaySize.y != height)) {
+      s_reported = true;
+      Logger::info(str::format(
+        "Dev menu overlay: host window is ", int(io.DisplaySize.x), "x", int(io.DisplaySize.y),
+        " but the menu renders into ", int(width), "x", int(height),
+        "; laying out against the image so the menu is not cropped and hit-testing follows what is drawn"));
+    }
+    io.DisplaySize = ImVec2(width, height);
+  }
+
   void pollDevMenuMouse() {
     HWND hostWindow = s_devMenuOverlayHwnd.load(std::memory_order_relaxed);
     if (hostWindow == nullptr) {

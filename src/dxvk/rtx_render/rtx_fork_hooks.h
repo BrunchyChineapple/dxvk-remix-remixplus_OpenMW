@@ -422,6 +422,31 @@ namespace dxvk {
     // No-op unless enableDevMenuOverlay has been called, so games that present normally are unaffected.
     // Implementation in rtx_fork_overlay.cpp.
     void pollDevMenuMouse();
+    // Records the extent of the image dispatchDevMenuOverlay is about to draw the menu into, so
+    // applyDevMenuDisplaySize can lay ImGui out against it. Called from ImGUI::render before the frame
+    // starts, because layout is fixed by ImGui::NewFrame and cannot be corrected afterwards.
+    // Implementation in rtx_fork_overlay.cpp.
+    void setDevMenuRenderExtent(uint32_t width, uint32_t height);
+    // Points io.DisplaySize at the image the menu is rendered into rather than at the host's window.
+    //
+    // ImGui_ImplWin32_NewFrame sets DisplaySize from GetClientRect on whichever window the backend was
+    // initialised with. For a host that consumes the output through the copy API that window is the
+    // host's, and it is not necessarily the size of m_finalOutput -- Remix's resolution is fixed when
+    // the host starts it, so any later resize, or an explicit render-resolution override, leaves the two
+    // disagreeing. ImGui then lays out for the window and is rasterised into the image, so the menu is
+    // cropped or scaled, and every widget's hit rect sits somewhere other than where it was drawn. Small
+    // controls become unclickable while large ones still work, which reads as "the UI is fine but I
+    // cannot select anything".
+    //
+    // pollDevMenuMouse already scales the polled cursor from window-client space into DisplaySize, and
+    // its scale factors are 1 only because nothing had ever changed DisplaySize. Setting it here is what
+    // makes that scaling do the work it was written for.
+    //
+    // Must be called between ImGui_ImplWin32_NewFrame and ImGui::NewFrame, and before
+    // pollDevMenuMouse so the poll scales into the corrected size. No-op unless a host nominated a
+    // window through enableDevMenuOverlay, so games that present normally keep window-sized layout.
+    // Implementation in rtx_fork_overlay.cpp.
+    void applyDevMenuDisplaySize();
 
     // What became of one external-API draw by the time the runtime had finished with it.
     //

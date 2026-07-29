@@ -608,6 +608,29 @@ namespace dxvk {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
+    // Leave the mouse cursor's SHAPE alone. Visibility is still ours -- the ShowCursor display-counter
+    // management in update() is untouched and remains the only thing that hides or reveals the pointer.
+    //
+    // Without this flag ImGui's Win32 backend owns the shape. ImGui_ImplWin32_NewFrame compares the
+    // cursor ImGui wants against the last one it applied and, on any change, calls
+    // ImGui_ImplWin32_UpdateMouseCursor -> ::SetCursor(::LoadCursor(NULL, IDC_ARROW)). That is a direct
+    // global call with no window in it, so it lands whatever HWND the backend was initialised with --
+    // which for a host that consumes the output through the copy API is the host's own window.
+    //
+    // io.MouseDrawCursor is flipped by update() every time the menu opens and closes, so the change test
+    // fires on every toggle and the standard Windows arrow gets installed over whatever the host had set.
+    // A host drawing a themed hardware cursor -- OpenMW builds one per GUI pointer with
+    // SDL_CreateColorCursor and installs it via SDL_SetCursor -- loses its cursor to a plain arrow, and
+    // only gets it back if something provokes a fresh WM_SETCURSOR.
+    //
+    // The same flag also stops the backend's WM_SETCURSOR case from swallowing that message, which
+    // matters on the legacy WndProc path where the host's own handler needs to see it.
+    //
+    // This is what the flag is documented for: "Use if the backend cursor changes are interfering with
+    // yours". Games presenting through Remix normally are unaffected, because they were relying on the
+    // visibility management rather than on the backend picking a shape for them.
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+
     m_capture = new ImGuiCapture(this);
 
     if (RtxOptions::useNewGuiInputMethod()) {
@@ -886,6 +909,11 @@ namespace dxvk {
   void ImGUI::update(const Rc<DxvkContext>& ctx) {
     ImGui_ImplDxvk::NewFrame();
     ImGui_ImplWin32_NewFrame();
+
+    // Before the poll, and before ImGui::NewFrame fixes the layout: point DisplaySize at the image the
+    // menu is actually drawn into rather than the host's window, which is what the poll below scales
+    // into. No-op unless a host nominated its window through dxvk_SetDevMenuWindow.
+    fork_hooks::applyDevMenuDisplaySize();
 
     // Between the backend's NewFrame and ImGui's, so a polled position wins over the backend's own
     // fallback, and after the backend has established DisplaySize so the poll can scale into it.
@@ -4314,6 +4342,11 @@ namespace dxvk {
 
       m_init = true;
     }
+
+    // The size the draw data is about to be rasterised at. Recorded before the frame opens because
+    // ImGui::NewFrame inside update() fixes the layout against io.DisplaySize, and nothing after that
+    // can uncrop it. Only consumed by a host that nominated a window for the dev-menu overlay.
+    fork_hooks::setDevMenuRenderExtent(surfaceSize.width, surfaceSize.height);
 
     update(ctx);
 
