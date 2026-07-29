@@ -171,11 +171,41 @@ namespace {
 
 
   // from rtx_mod_usd.cpp
-  XXH64_hash_t hack_getNextGeomHash() {
-    static uint64_t s_id = UINT64_MAX;
-    std::lock_guard lock { s_mutex };
-    --s_id;
-    return XXH64(&s_id, sizeof(s_id), 0);
+  // ---------------------------------------------------------------------------
+  // stampExternalMeshHashes (fork, 2026-07-29)
+  //
+  // Derives an API mesh's per-component geometry hashes from the caller's own mesh hash instead of from a
+  // counter, so they are the same on every run for the same mesh.
+  //
+  // This replaced hack_getNextGeomHash, which handed out a decrementing id. Nothing that renders an API
+  // mesh reads these -- SceneManager::submitExternalDraw keys its replacement lookup on the mesh handle --
+  // so the counter did no harm there, and that is why it survived as a "hack" for so long. What it broke is
+  // capture: rtx_game_capturer.cpp names every mesh getHash(geometryAssetHashRule()), so a capture taken
+  // from an API host recorded creation order rather than identity. The same scene captured twice produced
+  // different mesh names, which makes the capture useless as a basis for authoring replacements -- which is
+  // the main reason a host would take one.
+  //
+  // Components are kept distinct from one another so a hash rule selecting a subset still tells two meshes
+  // apart, and the surface index is mixed in so the submeshes of one mesh do not all share an identity.
+  // Indices and VertexPosition are left equal to each other, as the counter version had them, to keep the
+  // divergence from upstream to the derivation itself.
+  //
+  // Same technique as rtx_fork_precipitation.cpp's registerExternalMesh, which already derives its
+  // component hashes from a known mesh handle value.
+  // ---------------------------------------------------------------------------
+  void stampExternalMeshHashes(dxvk::RasterGeometry& dst, uint64_t meshHash, size_t surfaceIndex) {
+    const uint64_t seed = meshHash ^ (static_cast<uint64_t>(surfaceIndex) * 0x9E3779B97F4A7C15ull);
+    const auto component = [seed](uint64_t salt) -> XXH64_hash_t {
+      const uint64_t mixed = seed ^ salt;
+      return XXH64(&mixed, sizeof(mixed), seed);
+    };
+
+    dst.hashes[dxvk::HashComponents::Indices] =
+      dst.hashes[dxvk::HashComponents::VertexPosition] = component(0x01ull);
+    dst.hashes[dxvk::HashComponents::VertexTexcoord] = component(0x02ull);
+    dst.hashes[dxvk::HashComponents::GeometryDescriptor] = component(0x03ull);
+    dst.hashes[dxvk::HashComponents::VertexLayout] = component(0x04ull);
+    dst.hashes.precombine();
   }
 
 
@@ -1121,11 +1151,7 @@ namespace {
         static_assert(sizeof(src.indices_values[0]) == 4);
         dst.indexBuffer = dxvk::RasterBuffer { indexSlice, 0, sizeof(uint32_t), VK_INDEX_TYPE_UINT32 };
         // look comments in UsdMod::Impl::processMesh, rtx_mod_usd.cpp
-        dst.hashes[dxvk::HashComponents::Indices] = dst.hashes[dxvk::HashComponents::VertexPosition] = hack_getNextGeomHash();
-        dst.hashes[dxvk::HashComponents::VertexTexcoord] = hack_getNextGeomHash();
-        dst.hashes[dxvk::HashComponents::GeometryDescriptor] = hack_getNextGeomHash();
-        dst.hashes[dxvk::HashComponents::VertexLayout] = hack_getNextGeomHash();
-        dst.hashes.precombine();
+        stampExternalMeshHashes(dst, info->hash, i);
       }
       allocatedSurfaces.push_back(std::move(dst));
     }
@@ -1145,8 +1171,10 @@ namespace {
   // materializes deferred pending mesh creates. Allocates host-visible DXVK
   // buffers, memcpys owned vertex/index/skinning data, and fills a vector of
   // dxvk::RasterGeometry ready for registerExternalMesh().
+  // meshHash is the caller's own mesh hash, threaded through so stampExternalMeshHashes can derive
+  // deterministic component hashes from it -- see that function for why a counter was not good enough.
   std::vector<dxvk::RasterGeometry> buildExternalMeshSurfacesFromOwned(
-      const std::vector<OwnedSurface>& surfaces) {
+      const std::vector<OwnedSurface>& surfaces, uint64_t meshHash) {
     auto allocatedSurfaces = std::vector<dxvk::RasterGeometry> {};
     allocatedSurfaces.reserve(surfaces.size());
 
@@ -1166,7 +1194,8 @@ namespace {
           "Remix API mesh buffer");
     };
 
-    for (const OwnedSurface& src : surfaces) {
+    for (size_t surfaceIndex = 0; surfaceIndex < surfaces.size(); ++surfaceIndex) {
+      const OwnedSurface& src = surfaces[surfaceIndex];
       const size_t vertexDataSize = sizeInBytes(src.vertices.data(), src.vertices.size());
       const size_t indexDataSize = sizeInBytes(src.indices.data(), src.indices.size());
 
@@ -1234,11 +1263,7 @@ namespace {
       dst.indexCount = static_cast<uint32_t>(src.indices.size());
       dst.indexBuffer = dxvk::RasterBuffer { indexSlice, 0, sizeof(uint32_t), VK_INDEX_TYPE_UINT32 };
       // look comments in UsdMod::Impl::processMesh, rtx_mod_usd.cpp
-      dst.hashes[dxvk::HashComponents::Indices] = dst.hashes[dxvk::HashComponents::VertexPosition] = hack_getNextGeomHash();
-      dst.hashes[dxvk::HashComponents::VertexTexcoord] = hack_getNextGeomHash();
-      dst.hashes[dxvk::HashComponents::GeometryDescriptor] = hack_getNextGeomHash();
-      dst.hashes[dxvk::HashComponents::VertexLayout] = hack_getNextGeomHash();
-      dst.hashes.precombine();
+      stampExternalMeshHashes(dst, meshHash, surfaceIndex);
 
       allocatedSurfaces.push_back(std::move(dst));
     }
@@ -1253,7 +1278,7 @@ namespace {
     }
     auto& assets = ctx->getCommonObjects()->getSceneManager().getAssetReplacer();
     for (auto& mesh : meshCreates) {
-      auto allocatedSurfaces = buildExternalMeshSurfacesFromOwned(mesh.surfaces);
+      auto allocatedSurfaces = buildExternalMeshSurfacesFromOwned(mesh.surfaces, mesh.hash);
       assets->registerExternalMesh(mesh.handle, std::move(allocatedSurfaces));
     }
   }

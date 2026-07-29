@@ -569,6 +569,21 @@ namespace fork_hooks {
     // Only FINAL_COLOR. The depth/normal/picking outputs exist for tooling that reads them
     // occasionally, and a per-frame binary handshake around an occasional read is precisely the way
     // to strand the render thread on a wait that never gets its matching signal.
+    //
+    // GUI is a different case and that argument does not cover it: it is not an occasional read, and
+    // upstream's unsynced entry point does implement it -- by binding the caller's destination as a colour
+    // attachment and running ImGui straight into it, with no blit. It is rejected here only because this
+    // fork draws the developer menu itself, from dispatchDevMenuOverlay inside injectRTX, and ImGUI::render
+    // owns the whole ImGui frame from NewFrame to Render. Two callers per frame means two frames, not one
+    // frame drawn twice, so the two mechanisms are mutually exclusive rather than additive.
+    //
+    // Supporting GUI here would mean moving the render into the lambda below, ahead of the copyComplete
+    // signal, so it shares the submission -- a separate call cannot work, because a signal in one
+    // submission orders nothing against work in another. It would also need rtx.gui.enableExternalPresenter
+    // set, which upstream declares with no NoSave flag and so persists once written, and it would move the
+    // ImGui render onto the CS thread, where LightManager's UI mutex turns from same-thread undefined
+    // behaviour into an outright deadlock against a render thread waiting on copyComplete. None of that is
+    // work in progress; it is written down so the rejection is not mistaken for a considered one.
     if (type != REMIXAPI_DXVK_COPY_RENDERING_OUTPUT_TYPE_FINAL_COLOR) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
