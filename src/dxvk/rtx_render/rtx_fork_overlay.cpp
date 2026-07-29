@@ -347,6 +347,16 @@ namespace fork_hooks {
                              " for display size and mouse hit-testing"));
   }
 
+  // setDevMenuRenderExtent and applyDevMenuDisplaySize used to live here. They pointed io.DisplaySize at
+  // the image the menu is drawn into rather than at the host's window, because ImGui_ImplWin32_NewFrame
+  // derives it from GetClientRect and those two need not agree for a host that consumes the output through
+  // the copy API. ImGUI::render now sets DisplaySize from the surface extent it is about to rasterise
+  // into, which is the same correction made where it cannot drift, so both were removed rather than kept
+  // as a second opinion on one value.
+  //
+  // pollDevMenuMouse below still scales the polled cursor into DisplaySize. That is not redundant with
+  // the above and never was: the cursor arrives in window-client coordinates whatever DisplaySize holds.
+
   void pollDevMenuMouse() {
     HWND hostWindow = s_devMenuOverlayHwnd.load(std::memory_order_relaxed);
     if (hostWindow == nullptr) {

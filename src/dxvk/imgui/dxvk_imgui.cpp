@@ -611,6 +611,29 @@ namespace dxvk {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
+    // Leave the mouse cursor's SHAPE alone. Visibility is still ours -- the ShowCursor display-counter
+    // management in update() is untouched and remains the only thing that hides or reveals the pointer.
+    //
+    // Without this flag ImGui's Win32 backend owns the shape. ImGui_ImplWin32_NewFrame compares the
+    // cursor ImGui wants against the last one it applied and, on any change, calls
+    // ImGui_ImplWin32_UpdateMouseCursor -> ::SetCursor(::LoadCursor(NULL, IDC_ARROW)). That is a direct
+    // global call with no window in it, so it lands whatever HWND the backend was initialised with --
+    // which for a host that consumes the output through the copy API is the host's own window.
+    //
+    // io.MouseDrawCursor is flipped by update() every time the menu opens and closes, so the change test
+    // fires on every toggle and the standard Windows arrow gets installed over whatever the host had set.
+    // A host drawing a themed hardware cursor -- OpenMW builds one per GUI pointer with
+    // SDL_CreateColorCursor and installs it via SDL_SetCursor -- loses its cursor to a plain arrow, and
+    // only gets it back if something provokes a fresh WM_SETCURSOR.
+    //
+    // The same flag also stops the backend's WM_SETCURSOR case from swallowing that message, which
+    // matters on the legacy WndProc path where the host's own handler needs to see it.
+    //
+    // This is what the flag is documented for: "Use if the backend cursor changes are interfering with
+    // yours". Games presenting through Remix normally are unaffected, because they were relying on the
+    // visibility management rather than on the backend picking a shape for them.
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+
     m_capture = new ImGuiCapture(this);
 
     if (RtxOptions::useNewGuiInputMethod()) {
@@ -4357,6 +4380,11 @@ namespace dxvk {
     ImGui_ImplDxvk::NewFrame();
     ImGui_ImplWin32_NewFrame(); 
 
+    // Upstream now sets DisplaySize from the extent the draw data is rasterised at, which is what a host
+    // consuming the output through the copy API needs and what this fork previously supplied for itself
+    // through setDevMenuRenderExtent / applyDevMenuDisplaySize. Those are gone: two mechanisms deciding
+    // the same value would eventually disagree, and this one is in the better place -- it cannot be out of
+    // step with the surface, because it is derived from it.
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float) surfaceSize.width, (float) surfaceSize.height);
 

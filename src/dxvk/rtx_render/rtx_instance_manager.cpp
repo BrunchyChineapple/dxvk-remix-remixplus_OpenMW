@@ -1015,7 +1015,19 @@ namespace dxvk {
     currentInstance.surface.isPreservePath = false;
 
     // These can change in the Runtime UI so need to check during update
-    currentInstance.m_isHidden = currentInstance.testCategoryFlags(InstanceCategories::Hidden);
+    //
+    // Ignore is honoured here as well as Hidden, because otherwise it does nothing at all for a host
+    // that submits through the C API. rtx.ignoreTextures is enforced in the D3D9 texture path
+    // (d3d9_device.cpp), which rejects the draw before it ever becomes an instance -- and nothing in the
+    // codebase tests InstanceCategories::Ignore. setupCategoriesForTexture and the API's
+    // externalDrawTextureCategories both SET the flag, so an API host can tag a texture, see the tag
+    // recorded, and watch the geometry carry on rendering with no indication why.
+    //
+    // Hiding is a faithful stand-in for the D3D9 behaviour rather than an approximation of it:
+    // isHidden() gates the instance out of the acceleration structure (rtx_accel_manager.cpp), so the
+    // surface stops existing for raytracing exactly as it would have had the draw been dropped.
+    currentInstance.m_isHidden = currentInstance.testCategoryFlags(
+      InstanceCategories::Hidden, InstanceCategories::Ignore);
     currentInstance.m_isPlayerModel = currentInstance.testCategoryFlags(InstanceCategories::ThirdPersonPlayerModel);
     currentInstance.m_isWorldSpaceUI = currentInstance.testCategoryFlags(InstanceCategories::WorldUI);
 
