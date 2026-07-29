@@ -108,6 +108,18 @@ public:
 
   const std::unordered_map<XXH64_hash_t, RtLight>& getLightTable() const { return m_lights; }
   const std::unordered_map<uint64_t, RtLight>& getExternallyTrackedLightTable() const { return m_externallyTrackedLights; }
+  // Every light that went to the GPU this frame, from all sources, in the order the light buffer used.
+  //
+  // This is the accessor to reach for, and the three tables below are not. Lights arrive from three
+  // places -- m_lights, m_externallyTrackedLights, and m_externalLights filtered by the per-frame active
+  // set -- plus the fallback light, and prepareSceneData flattens all of them into here. Enumerating the
+  // tables individually instead means reproducing that assembly, and getting it wrong in two ways that
+  // are easy to miss: the names mislead ("externally tracked" lights are not the external C-API lights),
+  // and the C-API active set is *cleared* on the last line of prepareSceneData, so anything running later
+  // in the frame -- the game capturer, for one -- sees it empty and concludes there are no lights.
+  //
+  // Valid from the end of prepareSceneData until the next frame rebuilds it.
+  const std::vector<RtLight*>& getLinearizedLights() const { return m_linearizedLights; }
   const Rc<DxvkBuffer> getLightBuffer() const { return m_lightBuffer; }
   const Rc<DxvkBuffer> getPreviousLightBuffer() const { return m_previousLightBuffer.ptr() ? m_previousLightBuffer : m_lightBuffer; }
   const Rc<DxvkBuffer> getLightMappingBuffer() const { return m_lightMappingBuffer; }
