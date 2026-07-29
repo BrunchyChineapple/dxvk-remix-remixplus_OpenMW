@@ -2479,6 +2479,25 @@ namespace dxvk {
       state.drawCall.overrideGeometryData(&submeshes[i]);
       state.drawCall.overrideCullMode(state.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
 
+      // Reconcile the skinning data's bone count with the geometry now that the geometry exists.
+      //
+      // This is the API equivalent of the last line of DrawCallState::finalizeSkinningData, which keeps
+      // the two in step for legacy draws -- and which never runs here, because it is gated on
+      // futureSkinningData being valid and an API mesh has no async skinning future.
+      //
+      // The ordering is the whole problem. remixapi_DrawInstance builds the draw state from
+      // InstanceInfoBoneTransformsEXT and sets skinningData.numBonesPerVertex from
+      // geometryData.numBonesPerVertex, but at that point no geometry has been attached, so it copies a
+      // zero. The submesh assigned on the line above is what actually carries the real count.
+      //
+      // Rendering was unaffected and so this stayed hidden: the GPU skinning dispatch reads the bone count
+      // from geometryData (rtx_geometry_utils.cpp), which was always right. Only consumers that trust
+      // SkinningData saw the zero -- the game capturer being the one that found it, silently emitting
+      // skinned meshes with no weights or indices at all.
+      if (state.drawCall.skinningData.numBones > 0) {
+        state.drawCall.skinningData.numBonesPerVertex = state.drawCall.geometryData.numBonesPerVertex;
+      }
+
       XXH64_hash_t textureHash = 0;
 
       const MaterialData* material = m_pReplacer->accessExternalMaterial(submeshes[i].externalMaterial);

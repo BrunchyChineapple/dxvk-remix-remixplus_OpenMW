@@ -274,6 +274,15 @@ private:
                                     pxr::VtArray<T>& newBuffer,
                                     const float currentCaptureTime,
                                     CompareTReturnBool compareT);
+  // Abandons one buffer capture, reporting why, without stranding the mesh's outstanding-work count.
+  //
+  // Returning early from a capture callback is not simply a matter of `return`. evalNewBufferAndCache is
+  // what decrements meshSync.numOutstanding, so any path that skips it leaves the count permanently above
+  // zero and the export then waits on a condition variable that will never be notified -- a hang instead
+  // of a missing buffer. Every early exit has to come through here.
+  static void abandonBufferCapture(const std::shared_ptr<Mesh>& pMesh,
+                                   const char* what,
+                                   const std::string& reason);
   void exportUsd(const Rc<DxvkContext> ctx);
   struct Capture;
   static lss::Export prepExport(const Capture& cap,

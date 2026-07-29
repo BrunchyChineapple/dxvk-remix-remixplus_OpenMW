@@ -339,11 +339,26 @@ namespace dxvk {
       }
     };
 
-    for (auto&& pair : m_sceneManager.getLightManager().getLightTable()) {
-      captureLight(pair.second);
-    }
-    for (auto&& pair : m_sceneManager.getLightManager().getExternallyTrackedLightTable()) {
-      captureLight(pair.second);
+    // One loop over what the renderer actually used, rather than three loops reassembling it.
+    //
+    // The two tables this used to walk -- m_lights and m_externallyTrackedLights -- are only two of the
+    // three sources of lights. A host that creates its lights through remixapi_CreateLight, as a native
+    // integration does rather than a D3D9 game, puts every one of them in m_externalLights, and captures
+    // came out with no lights in them at all. Nothing reported it: from here there genuinely were none.
+    //
+    // Walking that third table directly does not work either, and this is the part worth remembering. The
+    // per-frame set of active C-API light handles is cleared on the last line of
+    // LightManager::prepareSceneData, and GameCapturer::step is called at the end of
+    // SceneManager::prepareSceneData -- after it. So by the time this runs the active set is always empty,
+    // and an accessor for it looks correct while returning nothing.
+    //
+    // m_linearizedLights has neither problem. prepareSceneData flattens all three tables plus the fallback
+    // light into it, in the order the light buffer used, and it survives until the next frame rebuilds it.
+    // It is by definition the lights in the scene, so it cannot drift from what was rendered.
+    for (const RtLight* pLight : m_sceneManager.getLightManager().getLinearizedLights()) {
+      if (pLight != nullptr) {
+        captureLight(*pLight);
+      }
     }
   }
 
@@ -551,10 +566,17 @@ namespace dxvk {
     // Note: Ensures that reading a Vec3 from the position buffer will result in the proper values. This can be extended if
     // games use odd formats like R32G32B32A32 in the future, but cannot be less than 3 components unless the code is modified
     // to accomodate other strange formats.
-    assert((geomData.positionBuffer.vertexFormat() == VK_FORMAT_R32G32B32_SFLOAT) ||
-           (geomData.positionBuffer.vertexFormat() == VK_FORMAT_R32G32B32A32_SFLOAT));
+    if ((geomData.positionBuffer.vertexFormat() != VK_FORMAT_R32G32B32_SFLOAT) &&
+        (geomData.positionBuffer.vertexFormat() != VK_FORMAT_R32G32B32A32_SFLOAT)) {
+      ONCE(Logger::err(str::format("[GameCapturer] Position buffer format ",
+          geomData.positionBuffer.vertexFormat(),
+          " cannot be read as a Vec3; this mesh will be captured without geometry.")));
+    }
     const size_t numVertices = geomData.vertexCount;
-    assert(numVertices > 0);
+    if (numVertices == 0) {
+      ONCE(Logger::err("[GameCapturer] A mesh reached the capturer with no vertices; skipping it."));
+      return;
+    }
     const size_t numIndices = geomData.indexCount;
     const bool isDoubleSided = geomData.cullMode == VK_CULL_MODE_NONE;
     if (bIsNewMesh) {
@@ -635,12 +657,24 @@ namespace dxvk {
       constexpr size_t positionSubElementSize = sizeof(float);
       const size_t positionStride = inputPositionBuffer.stride() / positionSubElementSize;
       const DxvkBufferSlice positionBuffer(posBuf, 0, posBuf->info().size);
-      // Ensure no reads are out of bounds
-      assert(((size_t) (numVertices - 1) * (size_t)inputPositionBuffer.stride() + sizeof(pxr::GfVec3f)) <=
-            (positionBuffer.length() - inputPositionBuffer.offsetFromSlice()));
+      // A real check, not an assert. This was an assert, and NDEBUG deletes it -- so in a release build
+      // the read below simply ran past the end of the mapping and took the process down inside a worker
+      // thread, with nothing on the stack to say which buffer or which mesh was at fault.
+      const size_t positionNeeded
+          = (size_t) (numVertices - 1) * (size_t) inputPositionBuffer.stride() + sizeof(pxr::GfVec3f);
+      const size_t positionAvailable = positionBuffer.length() - inputPositionBuffer.offsetFromSlice();
+      if (numVertices == 0 || positionNeeded > positionAvailable) {
+        abandonBufferCapture(pMesh, "position", str::format(numVertices, " vertices at stride ",
+            inputPositionBuffer.stride(), " need ", positionNeeded, " bytes past offset ",
+            inputPositionBuffer.offsetFromSlice(), ", but only ", positionAvailable, " are mapped"));
+        return;
+      }
       // Get copied-to-CPU GPU buffer
       const float* pVkPosBuf = (float*) positionBuffer.mapPtr((size_t)inputPositionBuffer.offsetFromSlice());
-      assert(pVkPosBuf);
+      if (pVkPosBuf == nullptr) {
+        abandonBufferCapture(pMesh, "position", "the readback buffer could not be mapped");
+        return;
+      }
       // Copy GPU buffer to local VtArray
       pxr::VtArray<pxr::GfVec3f> positions;
       positions.reserve(numVertices);
@@ -677,17 +711,32 @@ namespace dxvk {
                                         std::shared_ptr<Mesh> pMesh) {
                                           
     AssetExporter::BufferCallback captureMeshNormalsAsync = [ctx, numVertices, inputNormalBuffer, currentFrameNum, pMesh](Rc<DxvkBuffer> norBuf) {
-      assert(inputNormalBuffer.vertexFormat() == VK_FORMAT_R32G32B32_SFLOAT);
       // Prep helper vars
       constexpr size_t normalSubElementSize = sizeof(float);
       const size_t normalStride = inputNormalBuffer.stride() / normalSubElementSize;
       const DxvkBufferSlice normalBuffer(norBuf, 0, norBuf->info().size );
-      // Ensure no reads are out of bounds
-      assert(((size_t) (numVertices - 1) * (size_t)inputNormalBuffer.stride() + sizeof(pxr::GfVec3f)) <=
-            (normalBuffer.length() - inputNormalBuffer.offsetFromSlice()));
+      // Format checked rather than asserted: the read below treats the bytes as three floats, so anything
+      // else is not a slightly wrong normal, it is a misinterpretation of the whole buffer.
+      if (inputNormalBuffer.vertexFormat() != VK_FORMAT_R32G32B32_SFLOAT) {
+        abandonBufferCapture(pMesh, "normal",
+            str::format("format ", inputNormalBuffer.vertexFormat(), " is not R32G32B32_SFLOAT"));
+        return;
+      }
+      const size_t normalNeeded
+          = (size_t) (numVertices - 1) * (size_t) inputNormalBuffer.stride() + sizeof(pxr::GfVec3f);
+      const size_t normalAvailable = normalBuffer.length() - inputNormalBuffer.offsetFromSlice();
+      if (numVertices == 0 || normalNeeded > normalAvailable) {
+        abandonBufferCapture(pMesh, "normal", str::format(numVertices, " vertices at stride ",
+            inputNormalBuffer.stride(), " need ", normalNeeded, " bytes past offset ",
+            inputNormalBuffer.offsetFromSlice(), ", but only ", normalAvailable, " are mapped"));
+        return;
+      }
       // Get copied-to-CPU GPU buffer
       const float* pVkNormalBuf = (float*) normalBuffer.mapPtr((size_t)inputNormalBuffer.offsetFromSlice());
-      assert(pVkNormalBuf);
+      if (pVkNormalBuf == nullptr) {
+        abandonBufferCapture(pMesh, "normal", "the readback buffer could not be mapped");
+        return;
+      }
       // Copy GPU buffer to local VtArray
       pxr::VtArray<pxr::GfVec3f> normals;
       normals.reserve(numVertices);
@@ -708,17 +757,28 @@ namespace dxvk {
     m_exporter.copyBufferFromGPU(ctx, inputNormalBuffer, captureMeshNormalsAsync);
   }
 
+  // Returns false rather than reading out of bounds, so the caller can abandon the capture of this buffer.
+  // Was an assert, which NDEBUG removes.
   template<typename T>
-  static void getIndicesFromVK(const size_t numIndices, const DxvkBufferSlice& indexBuffer, pxr::VtArray<int>& indices) {
-    // Ensure no reads are out of bounds
-    assert((size_t) numIndices * sizeof(T) <= indexBuffer.length());
+  static bool getIndicesFromVK(const size_t numIndices, const DxvkBufferSlice& indexBuffer, pxr::VtArray<int>& indices,
+                               std::string& outReason) {
+    const size_t needed = (size_t) numIndices * sizeof(T);
+    if (numIndices == 0 || needed > indexBuffer.length()) {
+      outReason = str::format(numIndices, " indices of ", sizeof(T), " bytes need ", needed,
+                              " bytes, but only ", indexBuffer.length(), " are mapped");
+      return false;
+    }
 
     // Get copied-to-CPU GPU buffer
     const T* pVkIndexBuf = (T*) indexBuffer.mapPtr(0);
-    assert(pVkIndexBuf);
+    if (pVkIndexBuf == nullptr) {
+      outReason = "the readback buffer could not be mapped";
+      return false;
+    }
     for (size_t idx = 0; idx < numIndices; ++idx) {
       indices.push_back(pVkIndexBuf[idx]);
     }
+    return true;
   }
 
   void GameCapturer::captureMeshIndices(const Rc<DxvkContext> ctx,
@@ -734,17 +794,29 @@ namespace dxvk {
       pxr::VtArray<int> indices;
       indices.reserve(numIndices);
 
+      std::string indexReason;
+      bool indicesOk = false;
       switch (geomData.indexBuffer.indexType()) {
       case VK_INDEX_TYPE_UINT16:
-        getIndicesFromVK<uint16_t>(numIndices, indexBuffer, indices);
+        indicesOk = getIndicesFromVK<uint16_t>(numIndices, indexBuffer, indices, indexReason);
         break;
       case VK_INDEX_TYPE_UINT32:
-        getIndicesFromVK<uint32_t>(numIndices, indexBuffer, indices);
+        indicesOk = getIndicesFromVK<uint32_t>(numIndices, indexBuffer, indices, indexReason);
         break;
       default:
-        assert(0);
+        indexReason = str::format("unsupported index type ", geomData.indexBuffer.indexType());
+        break;
       }
-      assert(indices.size() > 0);
+      // The winding-order fix below indexes i+2 in threes, so a count that is not a multiple of three
+      // would read past the end even with the buffer bound satisfied. Checked here rather than trusted.
+      if (indicesOk && (indices.size() == 0 || indices.size() % 3 != 0)) {
+        indicesOk = false;
+        indexReason = str::format(indices.size(), " indices is not a whole number of triangles");
+      }
+      if (!indicesOk) {
+        abandonBufferCapture(pMesh, "index", indexReason);
+        return;
+      }
 
       // Need to change winding order in 3 situations:
       // 1. The mesh is LHS
@@ -780,7 +852,10 @@ namespace dxvk {
       // GPU interleaver before reaching here, but guard defensively in case that changes.
       const VkFormat texFmt = geomData.texcoordBuffer.vertexFormat();
       if (texFmt != VK_FORMAT_R32G32_SFLOAT && texFmt != VK_FORMAT_R32G32B32_SFLOAT && texFmt != VK_FORMAT_R32G32B32A32_SFLOAT) {
-        Logger::err(str::format("[GameCapturer] Skipping texcoord capture for unsupported format: ", texFmt));
+        // Routed through abandonBufferCapture, which this previously was not. A bare return here skipped
+        // the numOutstanding decrement that evalNewBufferAndCache performs, so an unsupported texcoord
+        // format did not lose a buffer -- it hung the export on a condition variable nothing would notify.
+        abandonBufferCapture(pMesh, "texcoord", str::format("unsupported format ", texFmt));
         return;
       }
       // Prep helper vars
@@ -788,12 +863,21 @@ namespace dxvk {
       constexpr size_t texcoordSubElementSize = sizeof(float);
       const size_t texcoordStride = geomData.texcoordBuffer.stride() / texcoordSubElementSize;
       const DxvkBufferSlice texcoordBuffer(texBuf, 0, texBuf->info().size);
-      // Ensure no reads are out of bounds
-      assert(((size_t) (numVertices - 1) * (size_t) geomData.texcoordBuffer.stride() + sizeof(pxr::GfVec2f)) <=
-             (texcoordBuffer.length() - geomData.texcoordBuffer.offsetFromSlice()));
+      const size_t texNeeded
+          = (size_t) (numVertices - 1) * (size_t) geomData.texcoordBuffer.stride() + sizeof(pxr::GfVec2f);
+      const size_t texAvailable = texcoordBuffer.length() - geomData.texcoordBuffer.offsetFromSlice();
+      if (numVertices == 0 || texNeeded > texAvailable) {
+        abandonBufferCapture(pMesh, "texcoord", str::format(numVertices, " vertices at stride ",
+            geomData.texcoordBuffer.stride(), " need ", texNeeded, " bytes past offset ",
+            geomData.texcoordBuffer.offsetFromSlice(), ", but only ", texAvailable, " are mapped"));
+        return;
+      }
       // Get copied-to-CPU GPU buffer
       const float* pVkTexcoordsBuf = (float*) texcoordBuffer.mapPtr((size_t) geomData.texcoordBuffer.offsetFromSlice());
-      assert(pVkTexcoordsBuf);
+      if (pVkTexcoordsBuf == nullptr) {
+        abandonBufferCapture(pMesh, "texcoord", "the readback buffer could not be mapped");
+        return;
+      }
       // Copy GPU buffer to local VtArray
       pxr::VtArray<pxr::GfVec2f> texcoords;
       texcoords.reserve(numVertices);
@@ -821,18 +905,33 @@ namespace dxvk {
                                       std::shared_ptr<Mesh> pMesh) {
 
     AssetExporter::BufferCallback captureMeshColorAsync = [ctx, geomData, currentFrameNum, pMesh](Rc<DxvkBuffer> colBuf) {
-      assert(geomData.color0Buffer.vertexFormat() == VK_FORMAT_B8G8R8A8_UNORM);
       // Prep helper vars
       const size_t numVertices = geomData.vertexCount;
       constexpr size_t colorSubElementSize = sizeof(uint8_t);
       const size_t colorStride = geomData.color0Buffer.stride() / colorSubElementSize;
       const DxvkBufferSlice colorBuffer(colBuf, 0, colBuf->info().size);
-      // Ensure no reads are out of bounds
-      assert(((size_t) (numVertices - 1) * (size_t) geomData.color0Buffer.stride() + sizeof(uint8_t) * 3) <=
-             (colorBuffer.length() - geomData.color0Buffer.offsetFromSlice()));
+      if (geomData.color0Buffer.vertexFormat() != VK_FORMAT_B8G8R8A8_UNORM) {
+        abandonBufferCapture(pMesh, "color",
+            str::format("format ", geomData.color0Buffer.vertexFormat(), " is not B8G8R8A8_UNORM"));
+        return;
+      }
+      // Four bytes, not three: the loop below reads index +3 for alpha, and the assert this replaces
+      // only accounted for three. So the original bound was wrong as well as absent in release.
+      const size_t colorNeeded
+          = (size_t) (numVertices - 1) * (size_t) geomData.color0Buffer.stride() + sizeof(uint8_t) * 4;
+      const size_t colorAvailable = colorBuffer.length() - geomData.color0Buffer.offsetFromSlice();
+      if (numVertices == 0 || colorNeeded > colorAvailable) {
+        abandonBufferCapture(pMesh, "color", str::format(numVertices, " vertices at stride ",
+            geomData.color0Buffer.stride(), " need ", colorNeeded, " bytes past offset ",
+            geomData.color0Buffer.offsetFromSlice(), ", but only ", colorAvailable, " are mapped"));
+        return;
+      }
       // Get copied-to-CPU GPU buffer
       const uint8_t* pVkColorBuf = (uint8_t*) colorBuffer.mapPtr((size_t) geomData.color0Buffer.offsetFromSlice());
-      assert(pVkColorBuf);
+      if (pVkColorBuf == nullptr) {
+        abandonBufferCapture(pMesh, "color", "the readback buffer could not be mapped");
+        return;
+      }
       // Copy GPU buffer to local VtArray
       pxr::VtArray<pxr::GfVec4f> colors;
       colors.reserve(numVertices);
@@ -866,20 +965,29 @@ namespace dxvk {
       const size_t bonesPerVertex = pMesh->lssData.bonesPerVertex;
       const size_t stride = geomData.blendWeightBuffer.stride() / sizeof(float);
       const DxvkBufferSlice bufferSlice(inBuf, 0, inBuf->info().size);
-      const VkFormat format = geomData.blendWeightBuffer.vertexFormat();
-      if (bonesPerVertex <= 2) {
-        assert(format == VK_FORMAT_R32_SFLOAT || format == VK_FORMAT_R32G32_SFLOAT || format == VK_FORMAT_R32G32B32_SFLOAT);
-      } else if (bonesPerVertex == 3) {
-        assert(format == VK_FORMAT_R32G32_SFLOAT || format == VK_FORMAT_R32G32B32_SFLOAT);
-      } else if (bonesPerVertex == 4) {
-        assert(format == VK_FORMAT_R32G32B32_SFLOAT);
+      // The format asserts that used to be here have been dropped rather than converted. They encoded an
+      // assumption from the legacy D3D9 path -- that the weight buffer's declared component count tracks
+      // bonesPerVertex -- which an API-submitted mesh does not satisfy: it declares R32_SFLOAT with the
+      // per-vertex tuple expressed entirely through the stride. The read below is driven by the stride and
+      // bonesPerVertex, so the declared component count does not affect its correctness, and asserting on
+      // it would reject valid geometry. What does need checking is the extent, which is done next.
+      const size_t weightNeeded = (size_t) (numVertices - 1) * (size_t) geomData.blendWeightBuffer.stride()
+          + sizeof(float) * bonesPerVertex;
+      const size_t weightAvailable
+          = bufferSlice.length() - geomData.blendWeightBuffer.offsetFromSlice();
+      if (numVertices == 0 || bonesPerVertex == 0 || weightNeeded > weightAvailable) {
+        abandonBufferCapture(pMesh, "blend weight", str::format(numVertices, " vertices, ", bonesPerVertex,
+            " bones per vertex at stride ", geomData.blendWeightBuffer.stride(), " need ", weightNeeded,
+            " bytes past offset ", geomData.blendWeightBuffer.offsetFromSlice(), ", but only ",
+            weightAvailable, " are mapped"));
+        return;
       }
-      // Ensure no reads are out of bounds
-      assert(((size_t) (numVertices - 1) * (size_t) geomData.blendWeightBuffer.stride() + sizeof(float) * bonesPerVertex) <=
-             (bufferSlice.length() - geomData.blendWeightBuffer.offsetFromSlice()));
       // Get copied-to-CPU GPU buffer
       const float* pVkBwBuf = (float*) bufferSlice.mapPtr((size_t) geomData.blendWeightBuffer.offsetFromSlice());
-      assert(pVkBwBuf);
+      if (pVkBwBuf == nullptr) {
+        abandonBufferCapture(pMesh, "blend weight", "the readback buffer could not be mapped");
+        return;
+      }
       // Copy GPU buffer to local VtArray
       pxr::VtArray<float> targetBuffer;
       targetBuffer.reserve(numVertices * bonesPerVertex);
@@ -903,18 +1011,33 @@ namespace dxvk {
       evalNewBufferAndCache(pMesh, pMesh->lssData.buffers.blendWeightBufs, targetBuffer, currentFrameNum, weightsDifferentEnough);
     };
     AssetExporter::BufferCallback captureMeshBlendIndicesAsync = [ctx, geomData, currentFrameNum, pMesh](Rc<DxvkBuffer> inBuf) {
-      assert(geomData.blendIndicesBuffer.vertexFormat() == VK_FORMAT_R8G8B8A8_USCALED);
       // Prep helper vars
       const size_t numVertices = geomData.vertexCount;
       const size_t bonesPerVertex = pMesh->lssData.bonesPerVertex;
       const size_t stride = geomData.blendIndicesBuffer.stride() / sizeof(uint8_t);
       const DxvkBufferSlice bufferSlice(inBuf, 0, inBuf->info().size);
-      // Ensure no reads are out of bounds
-      assert(((size_t) (numVertices - 1) * (size_t) geomData.blendIndicesBuffer.stride() + sizeof(uint8_t) * bonesPerVertex) <=
-             (bufferSlice.length() - geomData.blendIndicesBuffer.offsetFromSlice()));
+      if (geomData.blendIndicesBuffer.vertexFormat() != VK_FORMAT_R8G8B8A8_USCALED) {
+        abandonBufferCapture(pMesh, "blend index",
+            str::format("format ", geomData.blendIndicesBuffer.vertexFormat(), " is not R8G8B8A8_USCALED"));
+        return;
+      }
+      const size_t indexNeeded = (size_t) (numVertices - 1) * (size_t) geomData.blendIndicesBuffer.stride()
+          + sizeof(uint8_t) * bonesPerVertex;
+      const size_t indexAvailable
+          = bufferSlice.length() - geomData.blendIndicesBuffer.offsetFromSlice();
+      if (numVertices == 0 || bonesPerVertex == 0 || indexNeeded > indexAvailable) {
+        abandonBufferCapture(pMesh, "blend index", str::format(numVertices, " vertices, ", bonesPerVertex,
+            " bones per vertex at stride ", geomData.blendIndicesBuffer.stride(), " need ", indexNeeded,
+            " bytes past offset ", geomData.blendIndicesBuffer.offsetFromSlice(), ", but only ",
+            indexAvailable, " are mapped"));
+        return;
+      }
       // Get copied-to-CPU GPU buffer
       const uint8_t* VkBuf = (uint8_t*) bufferSlice.mapPtr((size_t) geomData.blendIndicesBuffer.offsetFromSlice());
-      assert(VkBuf);
+      if (VkBuf == nullptr) {
+        abandonBufferCapture(pMesh, "blend index", "the readback buffer could not be mapped");
+        return;
+      }
       // Copy GPU buffer to local VtArray
       pxr::VtArray<int> targetBuffer;
       targetBuffer.reserve(numVertices * bonesPerVertex);
@@ -937,6 +1060,15 @@ namespace dxvk {
       pMesh->meshSync.numOutstandingInc();
       m_exporter.copyBufferFromGPU(ctx, geomData.blendIndicesBuffer, captureMeshBlendIndicesAsync);
     }
+  }
+
+  void GameCapturer::abandonBufferCapture(const std::shared_ptr<Mesh>& pMesh,
+                                          const char* what,
+                                          const std::string& reason) {
+    Logger::err(str::format("[GameCapturer][Mesh:", pMesh->lssData.meshName, "] Skipping ", what,
+                            " capture: ", reason,
+                            ". The capture will be missing this buffer rather than reading out of bounds."));
+    pMesh->meshSync.numOutstandingDec();
   }
 
   template <typename T, typename CompareTReturnBool>
