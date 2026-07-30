@@ -4,7 +4,11 @@ subdir('unit')
 if target_machine.cpu() != 'armv8'
 
 dxvkrt_test_root = meson.global_source_root().replace('\\', '/') + '/tests/rtx/dxvk_rt_testing/'
-if fs.is_dir('dxvk_rt_testing')
+# Tests for the meson.build, not merely the directory. subdir() needs the build file, and the directory
+# exists without it: the build installs test artefacts into dxvk_rt_testing/apics, so a tree that never had
+# these tests checked out still grows the directory on its first build -- and every reconfigure after that
+# failed with "Nonexistent build file". fs.is_dir was the wrong predicate for what this guard protects.
+if fs.is_file('dxvk_rt_testing/meson.build')
   subdir('dxvk_rt_testing')
 endif
 

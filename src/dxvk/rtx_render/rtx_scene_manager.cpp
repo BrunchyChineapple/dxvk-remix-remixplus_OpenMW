@@ -2518,11 +2518,6 @@ namespace dxvk {
         state.drawCall.modifyMaterialData().setHashOverride(material->getHash());
 
         fork_hooks::externalDrawTextureCategories(textureHash, state.drawCall);
-
-        // After the categories, because this one is gated on InstanceCategories::Terrain having just been
-        // applied. Repoints `material` at the baked terrain material on success, which is why it comes
-        // before the materialData binding below.
-        fork_hooks::externalDrawTerrainBake(ctx, *this, state.drawCall, material);
       }
 
       const RtxParticleSystemDesc* pParticles = nullptr;

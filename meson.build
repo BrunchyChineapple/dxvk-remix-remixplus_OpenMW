@@ -976,6 +976,8 @@ if dxvk_is_ninja or dxvk_is_woa_ec
   endif
 endif # dxvk_is_ninja
 
-if fs.is_dir('nv-private')
+# Same correction as tests/rtx/meson.build: subdir() needs the build file, and the directory can exist
+# without it. Here nv-private carries an hdremix payload but no meson.build, which broke every reconfigure.
+if fs.is_file('nv-private/meson.build')
   subdir('nv-private')
 endif

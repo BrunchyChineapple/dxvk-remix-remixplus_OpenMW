@@ -149,15 +149,6 @@ namespace dxvk {
       XXH64_hash_t textureHash,
       DrawCallState& drawCall);
 
-    // Composites one API-submitted terrain layer into the baker's cascade set and repoints the draw at the
-    // baked terrain material, mirroring what RtxContext::bakeTerrain does for a D3D9 draw.
-    //
-    // Returns true when the draw was baked. The layer's UV mapping is solved from the submitted vertices
-    // rather than transported, and the coverage mask is read from the material's height slot; see the
-    // implementation in rtx_fork_submit.cpp for why each.
-    bool externalDrawTerrainBake(const Rc<DxvkContext>& ctx, SceneManager& scene,
-                                 DrawCallState& drawCall, const MaterialData*& material);
-
     // Stores per-draw texture hash metadata in SceneManager::m_drawCallMeta
     // when object picking is active, mirroring the D3D9 draw path.
     // NOTE: requires SceneManager to declare fork_hooks::externalDrawObjectPicking
