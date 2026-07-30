@@ -38,6 +38,43 @@ namespace dxvk {
                       DxvkRaytracingInstanceState& rtState, const DrawParameters& params,
                       const DrawCallState& drawCallState, OpaqueMaterialData* replacementMaterial,
                       Matrix4& textureTransformOut);
+
+    // One terrain layer of one API-submitted draw, described the way an API host can actually describe
+    // it: two textures plus affine maps from world position to each one's UV.
+    //
+    // A D3D9 draw does not need this because bakeDrawCall replays the game's own vertex and pixel
+    // pipeline into the cascade, which carries the texture stages and their matrices with it. An API host
+    // has no such pipeline, so it states the mapping directly instead. Each row is applied to
+    // (x, y, z, 1) and yields one UV component.
+    struct ExternalLayer {
+      TextureRef diffuse;
+      TextureRef mask;              // Left invalid by the base layer.
+
+      // World -> chunk UV. Defines the layer's footprint on the ground; the bake writes only where this
+      // lands inside the unit square.
+      Vector4 chunkU;
+      Vector4 chunkV;
+
+      // World -> diffuse UV, carrying the layer's tiling.
+      Vector4 diffuseU;
+      Vector4 diffuseV;
+
+      // World -> mask UV, stretched once across the chunk. Ignored when mask is invalid.
+      Vector4 maskU;
+      Vector4 maskV;
+    };
+
+    // Bakes one API-submitted terrain layer into every cascade level, and reports the texture transform
+    // the caller must put on the draw. Returns false if the cascade set is unavailable, in which case the
+    // caller should leave the draw alone.
+    //
+    // Composites rather than rasterises: the bake is an orthographic top-down projection and a terrain
+    // layer's UV depends only on horizontal position, so the whole operation is a 2D resample and needs
+    // no vertex data. Implementation in rtx_fork_terrain_bake.cpp.
+    bool bakeExternalLayer(Rc<RtxContext> ctx, const DrawCallState& drawCallState,
+                           const ExternalLayer& layer, bool isFirstLayerOfChunk,
+                           Matrix4& textureTransformOut);
+
     TerrainArgs getTerrainArgs() const;
 
     void onFrameEnd(Rc<DxvkContext> ctx);
@@ -168,9 +205,23 @@ namespace dxvk {
     bool gatherAndPreprocessReplacementTextures(Rc<RtxContext> ctx, const DrawCallState& drawCallState, OpaqueMaterialData* replacementMaterial, std::vector<RtxGeometryUtils::TextureConversionInfo>& replacementTextures);
     void updateMaterialData(Rc<RtxContext> ctx);
     void onFrameBegin(Rc<RtxContext> ctx, const DxvkContextState& dxvkCtxState);
+
+    // Per-frame setup for the API path, which has no DxvkContextState to offer.
+    //
+    // That turns out to cost nothing: of the four places bakeDrawCall reads the context state, three are
+    // saving viewport and render targets to restore afterwards -- which a compositing bake never disturbs
+    // -- and the fourth is updateTextureFormat, whose entire body is a warning when the bound render
+    // target is sRGB. calculateBakingParameters takes the state but does not read it; it works from the
+    // scene camera, the terrain BBOX and the cascade options alone.
+    // Implementation in rtx_fork_terrain_bake.cpp.
+    void onFrameBeginExternal(Rc<RtxContext> ctx);
+
     void registerTerrainMesh(Rc<RtxContext> ctx, const DxvkContextState& dxvkCtxState, const DrawCallState& drawCallState);
     void calculateTerrainBBOX(const uint32_t currentFrameIndex);
-    void calculateBakingParameters(Rc<RtxContext> ctx, const DxvkContextState& dxvkCtxState);
+    // Takes no DxvkContextState: it never read one. Verified by inspection of the whole body, which works
+    // from the scene camera, m_bakedTerrainBBOX and the cascade options. Dropping the dead parameter is
+    // what lets the API path share this untouched.
+    void calculateBakingParameters(Rc<RtxContext> ctx);
     void updateTextureFormat(const DxvkContextState& dxvkCtxState);
     void calculateCascadeMapResolution(const Rc<DxvkDevice>& device);
     const RtxMipmap::Resource& getTerrainTexture(Rc<DxvkContext> ctx, RtxTextureManager& textureManager, ReplacementMaterialTextureType::Enum textureType, uint32_t width, uint32_t height);

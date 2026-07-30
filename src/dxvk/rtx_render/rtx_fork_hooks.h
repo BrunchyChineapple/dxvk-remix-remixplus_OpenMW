@@ -126,14 +126,37 @@ namespace dxvk {
     void externalDrawMaterialReplacement(
       AssetReplacer& replacer, const MaterialData*& material, MaterialData& mergeStorage);
 
-    // Resolves the albedo texture hash from an API material and auto-applies
-    // all texture-based instance categories (Sky, Ignore, WorldUI, etc.).
-    // Writes textureHash out for use by subsequent hooks.
+    // Resolves the albedo texture hash that identifies an API-submitted draw, for category lookup and
+    // for object picking.
+    //
+    // MUST be called before externalDrawMaterialReplacement, and this ordering is the whole point of the
+    // function existing separately. A replacement is merged over the host's material, so afterwards the
+    // albedo slot may name a texture the USD supplied rather than one the host ever submitted. Reading
+    // the identity from that merged material breaks two things at once: the category sets hold host
+    // hashes and stop matching, so a replaced surface can never be tagged Terrain or Particle; and the
+    // hash handed to object picking is one ImGUI::AddTexture never saw, so the developer menu finds no
+    // feature flags for it and offers nothing but "Copy Texture hash".
+    //
+    // D3D9 has no equivalent problem because a legacy draw keeps its own material and replacements are
+    // looked up from that hash rather than folded into it. This restores the same invariant.
+    // Implementation in rtx_fork_submit.cpp.
+    XXH64_hash_t externalDrawTextureIdentity(const MaterialData* material);
+
+    // Auto-applies all texture-based instance categories (Sky, Ignore, WorldUI, etc.) for a draw whose
+    // identity hash has already been resolved by externalDrawTextureIdentity.
     // Implementation in rtx_fork_submit.cpp.
     void externalDrawTextureCategories(
-      const MaterialData* material,
-      DrawCallState& drawCall,
-      XXH64_hash_t& textureHash);
+      XXH64_hash_t textureHash,
+      DrawCallState& drawCall);
+
+    // Composites one API-submitted terrain layer into the baker's cascade set and repoints the draw at the
+    // baked terrain material, mirroring what RtxContext::bakeTerrain does for a D3D9 draw.
+    //
+    // Returns true when the draw was baked. The layer's UV mapping is solved from the submitted vertices
+    // rather than transported, and the coverage mask is read from the material's height slot; see the
+    // implementation in rtx_fork_submit.cpp for why each.
+    bool externalDrawTerrainBake(const Rc<DxvkContext>& ctx, SceneManager& scene,
+                                 DrawCallState& drawCall, const MaterialData*& material);
 
     // Stores per-draw texture hash metadata in SceneManager::m_drawCallMeta
     // when object picking is active, mirroring the D3D9 draw path.

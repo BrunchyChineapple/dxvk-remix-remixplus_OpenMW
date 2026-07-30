@@ -1767,6 +1767,18 @@ enum class MaterialDataType {
 };
 
 // Note: For use with "Legacy" D3D9 material information
+// Forward decl so LegacyMaterialData can friend the fork hook that builds the terrain override material.
+// Same arrangement as rtx_types.h uses for the external-draw category hook.
+// See docs/fork-touchpoints.md.
+class SceneManager;
+struct DrawCallState;
+struct MaterialData;
+namespace fork_hooks {
+  bool externalDrawTerrainBake(const Rc<DxvkContext>& ctx, SceneManager& scene,
+                               DrawCallState& drawCall, const MaterialData*& material);
+  void externalDrawTextureCategories(XXH64_hash_t textureHash, DrawCallState& drawCall);
+}
+
 struct LegacyMaterialData {
   static OpaqueMaterialData createDefault();
 
@@ -1885,6 +1897,15 @@ private:
   friend class TerrainBaker;
   friend class SceneManager;
   friend struct RemixAPIPrivateAccessor;
+
+  // Fork touchpoint: the API-path terrain bake builds the same override material RtxContext::bakeTerrain
+  // builds for a D3D9 draw, and needs the same access to do it. See docs/fork-touchpoints.md.
+  friend bool fork_hooks::externalDrawTerrainBake(const Rc<DxvkContext>& ctx, SceneManager& scene,
+                                                 DrawCallState& drawCall, const MaterialData*& material);
+
+  // Fork touchpoint: terrain-as-decals has to point the alpha argument sources at the vertex colour so a
+  // terrain layer's coverage reaches opacity. See docs/fork-touchpoints.md.
+  friend void fork_hooks::externalDrawTextureCategories(XXH64_hash_t textureHash, DrawCallState& drawCall);
 
   void updateCachedHash() {
     // Note: Currently only based on the color texture's data hash. This may have to be changed later to

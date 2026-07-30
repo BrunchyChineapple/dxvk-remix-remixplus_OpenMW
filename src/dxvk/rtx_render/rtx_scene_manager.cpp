@@ -2507,11 +2507,22 @@ namespace dxvk {
 
       const MaterialData* material = m_pReplacer->accessExternalMaterial(submeshes[i].externalMaterial);
       if (material != nullptr) {
+        // Identity first, while `material` is still the host's own. The merge below can repoint it at a
+        // material whose albedo the USD supplied, and that texture is one the host never submitted -- so
+        // reading the identity afterwards loses both category matching and the developer menu's texture
+        // tagging for every replaced surface. See externalDrawTextureIdentity in rtx_fork_hooks.h.
+        textureHash = fork_hooks::externalDrawTextureIdentity(material);
+
         fork_hooks::externalDrawMaterialReplacement(*m_pReplacer, material, mergedMaterialData);
 
         state.drawCall.modifyMaterialData().setHashOverride(material->getHash());
 
-        fork_hooks::externalDrawTextureCategories(material, state.drawCall, textureHash);
+        fork_hooks::externalDrawTextureCategories(textureHash, state.drawCall);
+
+        // After the categories, because this one is gated on InstanceCategories::Terrain having just been
+        // applied. Repoints `material` at the baked terrain material on success, which is why it comes
+        // before the materialData binding below.
+        fork_hooks::externalDrawTerrainBake(ctx, *this, state.drawCall, material);
       }
 
       const RtxParticleSystemDesc* pParticles = nullptr;

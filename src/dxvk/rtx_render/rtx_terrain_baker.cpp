@@ -979,7 +979,7 @@ namespace dxvk {
     m_needsMaterialDataUpdate = true;
 
     updateTextureFormat(dxvkCtxState);
-    calculateBakingParameters(ctx, dxvkCtxState);
+    calculateBakingParameters(ctx);
 
     // Clear terrain textures
     if (clearTerrainBeforeBaking() && !debugDisableBaking()) {
@@ -1033,7 +1033,7 @@ namespace dxvk {
     }
   }
 
-  void TerrainBaker::calculateBakingParameters(Rc<RtxContext> ctx, const DxvkContextState& dxvkCtxState) {
+  void TerrainBaker::calculateBakingParameters(Rc<RtxContext> ctx) {
 
     SceneManager& sceneManager = ctx->getSceneManager();
     Resources& resourceManager = ctx->getResourceManager();
