@@ -1934,6 +1934,15 @@ namespace {
       tryAsDxvk(), destination, type, waitForConsumer != 0);
   }
 
+  remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_CopyRenderingOutputWaitOnly(
+    IDirect3DSurface9* destination,
+    remixapi_dxvk_CopyRenderingOutputType type,
+    remixapi_Bool waitForConsumer) {
+    std::lock_guard lock { s_mutex };
+    return dxvk::fork_hooks::copyRenderingOutputSynced(
+      tryAsDxvk(), destination, type, waitForConsumer != 0, /* signalCopyComplete */ false);
+  }
+
   remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_GetVkImage(
     IDirect3DSurface9* source,
     uint64_t* out_vkImage) {
@@ -2674,6 +2683,7 @@ extern "C"
       interf.dxvk_GetSurfaceExternalMemory = remixapi_dxvk_GetSurfaceExternalMemory;
       interf.dxvk_GetOutputSyncSemaphores = remixapi_dxvk_GetOutputSyncSemaphores;
       interf.dxvk_CopyRenderingOutputSynced = remixapi_dxvk_CopyRenderingOutputSynced;
+      interf.dxvk_CopyRenderingOutputWaitOnly = remixapi_dxvk_CopyRenderingOutputWaitOnly;
       interf.dxvk_SetDevMenuWindow = remixapi_dxvk_SetDevMenuWindow;
       interf.dxvk_CopyRenderingOutput = remixapi_dxvk_CopyRenderingOutput;
       interf.dxvk_SetDefaultOutput = remixapi_dxvk_SetDefaultOutput;
@@ -2704,9 +2714,11 @@ extern "C"
     // same host, so its OpenGL consumer can order its sampling against Remix's copy.
     // 352 -> 360: dxvk_SetDevMenuWindow, so that host can point the developer menu's input at the
     // window the user actually sees rather than the one the swapchain happens to sit on.
+    // 360 -> 368: dxvk_CopyRenderingOutputWaitOnly, for a consumer that can signal a shared semaphore
+    // but cannot wait on one -- which is every OpenGL consumer on the current NVIDIA driver.
     // Appending is source- and binary-compatible for existing callers, so the API
     // minor is deliberately NOT bumped -- older clients simply never read the slot.
-    static_assert(sizeof(interf) == 360, "Add/remove function registration");
+    static_assert(sizeof(interf) == 368, "Add/remove function registration");
 
     *out_result = interf;
     return REMIXAPI_ERROR_CODE_SUCCESS;

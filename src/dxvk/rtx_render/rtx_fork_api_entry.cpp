@@ -558,7 +558,8 @@ namespace fork_hooks {
       D3D9DeviceEx*                         remixDevice,
       IDirect3DSurface9*                    destination,
       remixapi_dxvk_CopyRenderingOutputType type,
-      bool                                  waitForConsumer) {
+      bool                                  waitForConsumer,
+      bool                                  signalCopyComplete) {
     if (!remixDevice) {
       return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
     }
@@ -618,7 +619,7 @@ namespace fork_hooks {
     // mutex and does not take the device lock. Deliberately not strengthened here: diverging would
     // change lock ordering relative to every other dxvk_* entry point.
     remixDevice->EmitCs([cDest = destTexInfo->GetImage(), copyComplete, consumerDone,
-                         waitForConsumer](DxvkContext* dxvkCtx) {
+                         waitForConsumer, signalCopyComplete](DxvkContext* dxvkCtx) {
       auto* ctx = static_cast<RtxContext*>(dxvkCtx);
 
       // Close out whatever is already on the command list before touching the semaphore slots.
@@ -664,7 +665,13 @@ namespace fork_hooks {
       // Signal unconditionally, even when there was nothing to copy. A consumer that is already
       // waiting would otherwise hang, and because these are binary semaphores a single skipped
       // signal leaves the pairing off by one for every frame after it.
-      ctx->getCommandList()->addSignalSemaphore(copyComplete, 1);
+      //
+      // Unless the consumer never waits at all, in which case the signal has to be suppressed rather
+      // than harmlessly ignored -- an unconsumed binary semaphore stays signalled and the next signal on
+      // it is invalid. See dxvk_CopyRenderingOutputWaitOnly.
+      if (signalCopyComplete) {
+        ctx->getCommandList()->addSignalSemaphore(copyComplete, 1);
+      }
 
       // Submit now. Left unflushed, the signal would sit in an open command list until something
       // else happened to flush it, and the consumer would block for an unbounded time.

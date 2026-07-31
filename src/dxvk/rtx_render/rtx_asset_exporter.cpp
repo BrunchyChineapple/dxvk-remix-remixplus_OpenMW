@@ -58,6 +58,62 @@ namespace {
     return static_cast<VkFormat>(format);
   }
 
+  // Maps a block-compressed format onto the variant gli serialises into a DDS header that consumers
+  // actually read. Two separate problems, both visible in gli's table at include/gli/core/dx.inl.
+  //
+  // First, the RGB-only BC1 pair has no DDS or DXGI representation at all -- DDS and DXGI each have exactly
+  // one BC1, while gli distinguishes RGB_DXT1 from RGBA_DXT1 -- so gli falls back to D3DFMT_GLI1, a private
+  // marker with a private DXGI value that no standard reader decodes.
+  //
+  // Second, gli routes every sRGB block format through the D3DFMT_DX10 row while the UNORM ones get the
+  // legacy D3DFMT_DXT1/DXT3/DXT5 fourCCs. That distinction is what separates a capture the Remix toolkit
+  // will preview from one it will not: DXVK maps D3DFMT_DXT1 to BC1_RGBA_UNORM, so D3D9 titles land on the
+  // legacy rows and their captures are overwhelmingly DXT1/DXT3/DXT5. Content submitted through the API
+  // arrives in sRGB formats instead, lands on the DX10 rows, and stops previewing.
+  //
+  // Both substitutions are lossless on disk. The block payloads are byte-identical across all of these:
+  // the RGB/RGBA BC1 distinction only changes whether the block's 1-bit alpha is interpreted, and UNORM
+  // versus sRGB is a colour-space tag rather than an encoding. Legacy DDS carries no colour-space flag at
+  // all, so this is exactly the representation the working D3D9 captures use, and every consumer treats
+  // captured albedo as sRGB by convention. imageFormatInfo reports the same block size and element size
+  // for each pair, so the packing below is unaffected.
+  //
+  // Applied only where the gli format is chosen, deliberately not inside normalizeTargetFormat: that
+  // result becomes dstDesc.format, which decides useBlit, and blitting a compressed image to another
+  // compressed format is not a legal operation. The copy must keep the original format.
+  VkFormat serialisableGliFormat(VkFormat format) {
+    switch (format) {
+    // BC1 has one representation in DDS and in DXGI, but gli distinguishes RGB_DXT1 from RGBA_DXT1 and has
+    // no DDS row for the RGB-only pair -- its table (include/gli/core/dx.inl) gives them D3DFMT_GLI1, a
+    // private marker no standard reader decodes.
+    case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+    case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+    case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+      return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+
+    case VK_FORMAT_BC2_SRGB_BLOCK:
+      return VK_FORMAT_BC2_UNORM_BLOCK;
+
+    case VK_FORMAT_BC3_SRGB_BLOCK:
+      return VK_FORMAT_BC3_UNORM_BLOCK;
+
+    // Uncompressed sRGB, which is what runtime-generated surfaces like the terrain composite arrive as.
+    // gli has no legacy DDS row for RGBA byte order -- FORMAT_RGBA8_UNORM is a DX10 row too, and the only
+    // legacy uncompressed code is A8R8G8B8, which describes BGRA and would swap red and blue. So this stays
+    // a DX10 header and only drops the sRGB tag, giving DXGI_FORMAT_R8G8B8A8_UNORM.
+    //
+    // That is the axis that actually matters. Every format that survives in a working D3D9 capture is UNORM
+    // -- the legacy DXT1/DXT3/DXT5 codes and a lone DX10 R8G8B8A8_UNORM -- and every format that failed here
+    // was an _SRGB variant. Legacy DDS has no colour-space flag at all, so consumers treat captured albedo
+    // as sRGB by convention regardless, which is exactly how the D3D9 captures have always behaved.
+    case VK_FORMAT_R8G8B8A8_SRGB:
+      return VK_FORMAT_R8G8B8A8_UNORM;
+
+    default:
+      return format;
+    }
+  }
+
   VkExtent3D gliExtentToVk(gli::extent2d ext) {
     return VkExtent3D {
       static_cast<uint32_t>(ext.x),
@@ -131,7 +187,7 @@ namespace dxvk {
 
     // Detect changes in GLI since we're casting the VK format to GLI
     assert(gli::format::FORMAT_LAST >= (gli::format) dstDesc.format);
-    const gli::format outFormat = (gli::format) dstDesc.format;
+    const gli::format outFormat = (gli::format) serialisableGliFormat(dstDesc.format);
 
     if (thumbnail) {
       constexpr uint16_t kDefaultExtentSize = 512;

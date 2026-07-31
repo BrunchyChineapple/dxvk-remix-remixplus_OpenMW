@@ -1113,6 +1113,31 @@ extern "C" {
     remixapi_dxvk_CopyRenderingOutputType type,
     remixapi_Bool                         waitForConsumer);
 
+  // As dxvk_CopyRenderingOutputSynced, but does not signal 'copyComplete' -- it only waits on
+  // 'consumerDone' before copying.
+  //
+  // For consumers that cannot wait. An OpenGL consumer on the NVIDIA driver is one: glSignalSemaphoreEXT
+  // on an imported semaphore works, while glWaitSemaphoreEXT on the same kind of imported semaphore
+  // returns GL_INVALID_OPERATION regardless of how long ago the matching signal was submitted, whether a
+  // texture barrier is supplied, or whether exactly one signal is outstanding. All of those were tested.
+  //
+  // That leaves a one-way handshake, which is enough for the hazard that actually matters. The damaging
+  // race is Remix overwriting the surface while the consumer is still reading it, and 'consumerDone'
+  // closes that on its own. What is given up is the consumer knowing when the copy finished, so it may
+  // sample a surface the copy has not filled yet -- in practice one frame behind, which a host that
+  // already defers its copy past its own draw is arranged for anyway.
+  //
+  // Signalling 'copyComplete' here anyway would be actively harmful, not merely useless: it is a binary
+  // semaphore, so a signal nobody waits on leaves it signalled, and the next signal is then invalid.
+  //
+  // waitForConsumer carries the same requirement as above -- false unless the consumer really did signal
+  // since the previous call -- for the same reason: an unmatched wait blocks Remix's render thread with
+  // no timeline semaphore available to recover through.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_dxvk_CopyRenderingOutputWaitOnly)(
+    IDirect3DSurface9*                    destination,
+    remixapi_dxvk_CopyRenderingOutputType type,
+    remixapi_Bool                         waitForConsumer);
+
   // NOTE: If adding a new function, append it at the END of the struct.
   //       Reordering or inserting in the middle breaks backwards compatibility.
   typedef struct remixapi_Interface {
@@ -1179,6 +1204,7 @@ extern "C" {
     PFN_remixapi_dxvk_GetOutputSyncSemaphores   dxvk_GetOutputSyncSemaphores;
     PFN_remixapi_dxvk_CopyRenderingOutputSynced dxvk_CopyRenderingOutputSynced;
     PFN_remixapi_dxvk_SetDevMenuWindow          dxvk_SetDevMenuWindow;
+    PFN_remixapi_dxvk_CopyRenderingOutputWaitOnly dxvk_CopyRenderingOutputWaitOnly;
   } remixapi_Interface;
 
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(

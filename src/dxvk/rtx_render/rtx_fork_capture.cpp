@@ -143,8 +143,31 @@ namespace fork_hooks {
 
     lssMat.enableOpacity = bEnableOpacity;
 
-    // Sampler info is only available on the D3D9 path; API-submitted materials may have no sampler.
+    // Sampler state. LegacyMaterialData only carries a sampler on the D3D9 path, but the exporter writes
+    // WrapModeU/V and FilterMode for every material regardless, so leaving this unset does not mean
+    // "unspecified" -- it means the defaults in lss::Material::Sampler get written instead of the sampler
+    // the surface is actually drawn with. For anything with texture coordinates outside 0..1 that is the
+    // difference between a tiled texture and one flat edge texel.
+    //
+    // The API path can still recover it: the resolved surface material holds a sampler index into the
+    // scene's sampler table, which is the same sampler the runtime draws with.
     const auto& sampler = materialData.getSampler();
+    if (sampler == nullptr) {
+      const uint32_t samplerIndex = rtInstance.getSamplerIndex();
+      const auto& samplers = ctx->getCommonObjects()->getSceneManager().getSamplerTable();
+      if (samplerIndex != kSurfaceMaterialInvalidTextureIndex && samplerIndex < samplers.size()
+          && samplers[samplerIndex] != nullptr) {
+        const auto& apiSamplerInfo = samplers[samplerIndex]->info();
+        lssMat.sampler.addrModeU = apiSamplerInfo.addressModeU;
+        lssMat.sampler.addrModeV = apiSamplerInfo.addressModeV;
+        lssMat.sampler.filter = apiSamplerInfo.magFilter;
+        lssMat.sampler.borderColor = apiSamplerInfo.borderColor;
+      } else {
+        Logger::warn(str::format("[GameCapturer] No sampler resolved for API material ", matName,
+                                 " (sampler index ", samplerIndex, "); the capture keeps the default "
+                                 "repeat/linear rather than the sampler the surface is drawn with"));
+      }
+    }
     if (sampler != nullptr) {
       const auto& samplerCreateInfo = sampler->info();
       lssMat.sampler.addrModeU = samplerCreateInfo.addressModeU;

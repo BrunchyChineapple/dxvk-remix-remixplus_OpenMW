@@ -115,11 +115,17 @@ struct Material {
   std::string matName;
   std::string albedoTexPath;
   bool        enableOpacity = false;
+  // Defaulted because the exporter writes these unconditionally into every material's WrapModeU/V and
+  // FilterMode attributes. A capture path that cannot supply a sampler -- which is any material submitted
+  // through the API, where LegacyMaterialData carries none -- previously left them uninitialised, so
+  // whatever was on the stack was written out as the wrap mode. Repeat and linear are the right defaults:
+  // repeat is what tiled texture coordinates need, and a texture sampled with coordinates outside 0..1
+  // under clamp collapses onto one edge texel and renders as a single flat colour.
   struct Sampler {
-    VkSamplerAddressMode addrModeU;
-    VkSamplerAddressMode addrModeV;
-    VkFilter             filter;
-    VkClearColorValue    borderColor;
+    VkSamplerAddressMode addrModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    VkSamplerAddressMode addrModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    VkFilter             filter = VK_FILTER_LINEAR;
+    VkClearColorValue    borderColor {};
   } sampler;
   // TODO: std::string normalTexPath;
   // TODO: etc...

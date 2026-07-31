@@ -402,11 +402,15 @@ namespace dxvk {
     // whether its consumer ran, so this is not inferred here.
     // No private-member access; no friend declaration needed.
     // Implementation in rtx_fork_api_entry.cpp.
+    // signalCopyComplete false serves a consumer that can signal a shared semaphore but cannot wait on
+    // one. The signal must then be suppressed rather than merely ignored: copyComplete is binary, so one
+    // nobody waits on stays signalled and makes the next signal invalid.
     remixapi_ErrorCode copyRenderingOutputSynced(
       D3D9DeviceEx*                         remixDevice,
       IDirect3DSurface9*                    destination,
       remixapi_dxvk_CopyRenderingOutputType type,
-      bool                                  waitForConsumer);
+      bool                                  waitForConsumer,
+      bool                                  signalCopyComplete = true);
 
     // Arms dispatchDevMenuOverlay for a host that consumes Remix's output through the copy entry
     // points rather than by presenting. Idempotent; called from copyRenderingOutputSynced, whose use
@@ -477,6 +481,8 @@ namespace dxvk {
       static std::atomic<uint64_t> s_total { 0 };
       static std::atomic<uint64_t> s_rejected { 0 };
       static std::atomic<uint64_t> s_unhittable { 0 };
+      static std::atomic<uint64_t> s_blended { 0 };
+      static std::atomic<uint64_t> s_alphaTested { 0 };
       static std::atomic<uint64_t> s_nextReportAt { 1 };
 
       const uint64_t total = s_total.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -484,6 +490,35 @@ namespace dxvk {
         s_rejected.fetch_add(1, std::memory_order_relaxed);
       } else if (report.instanceMask == 0) {
         s_unhittable.fetch_add(1, std::memory_order_relaxed);
+      }
+
+      // Opacity split, as a running total rather than a single sample.
+      //
+      // A surface that is not fully opaque cannot take the fast closest-hit path: every ray intersection
+      // runs an anyhit shader and samples the opacity channel. On geometry that is genuinely opaque that
+      // cost buys nothing, and it is paid per intersection, so it scales with resolution -- which is the
+      // shape of the cost actually measured here.
+      //
+      // calculateAlphaState derives it as !blendEnabled && alphaTestType == kAlways, so the two reasons a
+      // surface loses opacity are distinguishable and want separate counters. They point at different
+      // code: blending is the material's blend type, alpha testing is its threshold. One sample cannot
+      // tell them apart from a surface that is legitimately transparent, and a single early draw is not
+      // representative of a populated frame.
+      if (report.accepted) {
+        // AlphaTestType::kAlways, spelled as its value rather than the enum on purpose: the enum lives in
+        // surface_shared.h, which this header does not include, and the note above on staying out of
+        // rtx_fork_*.cpp is about not adding dependency edges here. kAlways means every fragment passes,
+        // which is how "no alpha testing" is expressed.
+        constexpr uint32_t kAlphaTestAlways = 7;
+        const bool alphaTested = report.alphaTestType != kAlphaTestAlways;
+        if (alphaTested) {
+          s_alphaTested.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (!report.fullyOpaque && !alphaTested) {
+          // Opacity lost to blending alone, which is the case a mesh submitted through the API should
+          // almost never be in unless it really is translucent.
+          s_blended.fetch_add(1, std::memory_order_relaxed);
+        }
       }
 
       uint64_t due = s_nextReportAt.load(std::memory_order_relaxed);
@@ -507,7 +542,9 @@ namespace dxvk {
         " alphaTest ", report.alphaTestType,
         " | tlas surfaces ", report.tlasSurfaceCount,
         " | running: ", s_rejected.load(std::memory_order_relaxed), " rejected, ",
-        s_unhittable.load(std::memory_order_relaxed), " with a zero instance mask"));
+        s_unhittable.load(std::memory_order_relaxed), " with a zero instance mask, ",
+        s_blended.load(std::memory_order_relaxed), " non-opaque from blending alone, ",
+        s_alphaTested.load(std::memory_order_relaxed), " alpha tested"));
     }
 
     // Rasterises the developer menu into rtOutput.m_finalOutput from inside the injectRTX chain.

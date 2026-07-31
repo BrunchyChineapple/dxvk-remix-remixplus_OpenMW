@@ -256,7 +256,9 @@ namespace remix {
       // appended for the same host, so its OpenGL consumer can order its sampling
       // against Remix's copy. Same reasoning -- no C++ wrapper methods.
       // 352 -> 360: dxvk_SetDevMenuWindow, same host, same reasoning.
-      static_assert(sizeof(remixapi_Interface) == 360,
+      // 360 -> 368: dxvk_CopyRenderingOutputWaitOnly, for a consumer that can signal a
+      // shared semaphore but cannot wait on one. Same host, same reasoning.
+      static_assert(sizeof(remixapi_Interface) == 368,
                     "Change version, update C++ wrapper when adding new functions");
 
       remix::Interface interfaceInCpp = {};
