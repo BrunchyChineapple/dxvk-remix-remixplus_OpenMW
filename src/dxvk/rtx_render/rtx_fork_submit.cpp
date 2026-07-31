@@ -48,8 +48,24 @@ namespace fork_hooks {
   // ---------------------------------------------------------------------------
   void externalDrawMaterialReplacement(
       AssetReplacer& replacer, const MaterialData*& material, MaterialData& mergeStorage) {
+    // Say how often each lookup succeeds, because from the outside a bound replacement and an unbound one
+    // can look identical.
+    //
+    // Most entries in a real pack are partial -- an `over` setting nothing but a roughness constant -- so a
+    // replacement that binds correctly may produce no visible difference at all. That makes "it looks the
+    // same" uninformative either way, and it is the only signal a host has otherwise. Counting the two
+    // lookups separately also distinguishes a pack authored against summed API material hashes from one
+    // authored against capture keys, which need completely different fixes.
+    static std::atomic<uint64_t> s_lookups { 0 };
+    static std::atomic<uint64_t> s_hitsByMaterialHash { 0 };
+    static std::atomic<uint64_t> s_hitsByAlbedoHash { 0 };
+    const uint64_t lookupCount = s_lookups.fetch_add(1, std::memory_order_relaxed) + 1;
+
     // Check for material replacement (matches the D3D9 draw path behavior).
     MaterialData* pReplacementMaterial = replacer.getReplacementMaterial(material->getHash());
+    if (pReplacementMaterial != nullptr) {
+      s_hitsByMaterialHash.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // Then by albedo texture hash, which is what a mat_<hex> key from a capture actually is.
     //
@@ -69,8 +85,19 @@ namespace fork_hooks {
         const XXH64_hash_t albedoHash = albedo.getImageHash();
         if (albedoHash != 0 && albedoHash != kEmptyHash) {
           pReplacementMaterial = replacer.getReplacementMaterial(albedoHash);
+          if (pReplacementMaterial != nullptr) {
+            s_hitsByAlbedoHash.fetch_add(1, std::memory_order_relaxed);
+          }
         }
       }
+    }
+
+    // Periodic rather than per-draw: this runs for every external draw, so anything per-call would drown
+    // the log and cost more than the lookup.
+    if (lookupCount % 2000000 == 0) {
+      Logger::info(str::format("[RTX-Replacement] material lookups ", lookupCount,
+        ": ", s_hitsByMaterialHash.load(std::memory_order_relaxed), " matched the material hash, ",
+        s_hitsByAlbedoHash.load(std::memory_order_relaxed), " matched the albedo texture hash instead"));
     }
 
     if (pReplacementMaterial == nullptr) {
