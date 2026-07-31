@@ -567,6 +567,20 @@ namespace dxvk {
     }
 
     if (DxvkDLFG::enable() && !common->metaDLFG().supportsDLFG()) {
+      // Worth saying, because this turns the user's setting off permanently and used to do it in silence.
+      //
+      // NGX initialises lazily, on the first DLSS, DLSS-RR or DLFG feature context. Reaching this before
+      // that has happened means support has not been probed yet rather than being absent, and clearing the
+      // option then is unrecoverable: support turning true later cannot switch it back on, so frame
+      // generation stays off for the run with the configuration still reading as enabled.
+      static bool reported = false;
+      if (!reported) {
+        reported = true;
+        Logger::info(str::format("Frame generation: turning rtx.dlfg.enable off -- DLFG reports unsupported",
+          common->metaNGXContext().getDLFGNotSupportedReason().empty()
+            ? " (no reason given, which means NGX has not been initialised yet)"
+            : str::format(" because: ", common->metaNGXContext().getDLFGNotSupportedReason())));
+      }
       DxvkDLFG::enable.setDeferred(false);
     }
     

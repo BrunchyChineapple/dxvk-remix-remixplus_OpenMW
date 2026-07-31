@@ -1438,6 +1438,30 @@ namespace dxvk {
     // isFSRFGEnabled() already folds in device support, so no separate
     // supported check is needed here. DLFG wins if somehow both are on.
     const bool createFsrfgPresenter = m_context->isFSRFGEnabled() && !dlfgEnabled;
+
+    // Say which presenter is being built and why.
+    //
+    // Nothing on the DLFG path logs: the presenter's constructor is silent, and both NGX initialisation and
+    // the DLFG support probe only log when something is wrong. A host with frame generation working
+    // therefore produces exactly the same log as one where it never came up, and the only visible
+    // difference is the swapchain image count -- which is *lower* with DLFG, not higher, because
+    // DxvkDLFGPresenter::recreateSwapChain replaces the requested count with interpolatedFrameCount + 1.
+    // Diagnosing this from the outside meant reading three files to interpret one number, so it is now
+    // stated outright.
+    //
+    // The developer menu is no substitute. It reports support and configuration rather than what was
+    // built, so it says frame generation is active in hosts where this function created a plain presenter.
+    {
+      auto& ngx = m_device->getCommon()->metaNGXContext();
+      const std::string reason = ngx.getDLFGNotSupportedReason();
+      Logger::info(str::format("Frame generation: creating ",
+        dlfgEnabled ? "the DLFG presenter" : (createFsrfgPresenter ? "the FSR FG presenter" : "a plain presenter with no frame generation"),
+        " (DLFG: supported ", ngx.supportsDLFG() ? "yes" : "no",
+        ", rtx.dlfg.enable ", DxvkDLFG::enable() ? "on" : "off",
+        ", previously failed ", m_device->getCommon()->metaDLFG().hasDLFGFailed() ? "yes" : "no",
+        ", max interpolated frames ", ngx.dlfgMaxInterpolatedFrames(), ")",
+        reason.empty() ? "" : str::format(" -- unsupported because: ", reason)));
+    }
     DxvkDeviceQueue presentQueue = (dlfgEnabled || createFsrfgPresenter) ? m_device->queues().present : m_device->queues().graphics;
     
     vk::PresenterDevice presenterDevice;
