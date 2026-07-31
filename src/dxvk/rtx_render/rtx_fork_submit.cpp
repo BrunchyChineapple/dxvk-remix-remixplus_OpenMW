@@ -37,7 +37,44 @@ namespace fork_hooks {
     // Check for mesh/light replacements keyed on the API mesh handle, same as
     // the D3D9 draw-call path. This lets .usd replacements target API-submitted
     // meshes (e.g. hash the remix API mesh handle and author a replacement).
-    return replacer.getReplacementsForMesh(meshHash);
+    std::vector<AssetReplacement>* pReplacements = replacer.getReplacementsForMesh(meshHash);
+
+    // Count hits and distinct misses, for the same reason the material lookup below does.
+    //
+    // Comparing an OpenMW capture's mesh_ names against a pack answers a different question than this
+    // one, and on the material side that distinction wasted a lot of time: capture naming and runtime
+    // binding are not the same thing. This is the only place that knows whether a mesh replacement
+    // actually attached.
+    //
+    // Misses are counted by distinct hash rather than per draw, because a hash is looked up once per draw
+    // and a handful of meshes would otherwise dominate the total. The distinct count is the useful one: it
+    // says how many of the host's meshes are unknown to the pack.
+    static std::atomic<uint64_t> s_lookups { 0 };
+    static std::atomic<uint64_t> s_hits { 0 };
+    static dxvk::mutex s_missMutex;
+    static fast_unordered_set s_missedHashes;
+    static fast_unordered_set s_hitHashes;
+
+    const uint64_t lookupCount = s_lookups.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (pReplacements != nullptr) {
+      s_hits.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    {
+      std::lock_guard<dxvk::mutex> lock(s_missMutex);
+      if (pReplacements != nullptr) {
+        s_hitHashes.insert(meshHash);
+      } else {
+        s_missedHashes.insert(meshHash);
+      }
+      if (lookupCount % 200000 == 0) {
+        Logger::info(str::format("[RTX-Replacement] mesh lookups ", lookupCount, ": ",
+          s_hits.load(std::memory_order_relaxed), " bound a replacement; distinct meshes ",
+          s_hitHashes.size(), " matched and ", s_missedHashes.size(), " did not"));
+      }
+    }
+
+    return pReplacements;
   }
 
   // ---------------------------------------------------------------------------
