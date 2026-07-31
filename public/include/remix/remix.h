@@ -258,7 +258,10 @@ namespace remix {
       // 352 -> 360: dxvk_SetDevMenuWindow, same host, same reasoning.
       // 360 -> 368: dxvk_CopyRenderingOutputWaitOnly, for a consumer that can signal a
       // shared semaphore but cannot wait on one. Same host, same reasoning.
-      static_assert(sizeof(remixapi_Interface) == 368,
+      // 368 -> 384: dxvk_CreateScreenOverlayImage and dxvk_SetScreenOverlayEnabled, so a
+      // host can draw its 2D interface into memory Remix samples rather than uploading it
+      // through DrawScreenOverlay. Same host, same reasoning.
+      static_assert(sizeof(remixapi_Interface) == 384,
                     "Change version, update C++ wrapper when adding new functions");
 
       remix::Interface interfaceInCpp = {};

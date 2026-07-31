@@ -1138,6 +1138,38 @@ extern "C" {
     remixapi_dxvk_CopyRenderingOutputType type,
     remixapi_Bool                         waitForConsumer);
 
+  // Creates an exportable image for the host to draw its 2D interface into, and reports the external
+  // memory behind it. Remix composites it over the path-traced image every frame once enabled.
+  //
+  // The counterpart to DrawScreenOverlay without the upload. That takes CPU pixels, which at 4K is
+  // about 33MB across the bus every frame -- for a host that has just removed a readback of exactly
+  // that size from its render loop, paying it again to show a menu is no bargain.
+  //
+  // The image is VK_FORMAT_R8G8B8A8_UNORM, optimally tiled, and created in VK_IMAGE_LAYOUT_GENERAL.
+  // Remix allocates it rather than adapting a shared D3D9 surface so the format can be chosen: D3D9
+  // would force BGRA8, and an OpenGL producer writing RGBA8 into memory read as BGRA8 has its channels
+  // swapped. GENERAL because the producer is another API that does not track Vulkan layouts, so there
+  // is no correct moment to transition and no ownership to transfer.
+  //
+  // Draw with straight (non-premultiplied) alpha and clear to transparent black; coverage comes from
+  // the alpha channel.
+  //
+  // Calling again with different dimensions replaces the image, after which the previous handle must
+  // not be used. The handle returned belongs to Remix and must not be closed by the caller.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_dxvk_CreateScreenOverlayImage)(
+    uint32_t                          width,
+    uint32_t                          height,
+    remixapi_dxvk_ExternalMemoryInfo* out_info);
+
+  // Turns compositing of the shared overlay image on or off, and sets its opacity.
+  //
+  // Separate from creation so compositing can stop without releasing the allocation -- during a loading
+  // screen, say, where the host is not drawing its interface and a stale image would otherwise remain
+  // on screen. Enabling before an image exists fails rather than silently doing nothing.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_dxvk_SetScreenOverlayEnabled)(
+    remixapi_Bool enabled,
+    float         opacity);
+
   // NOTE: If adding a new function, append it at the END of the struct.
   //       Reordering or inserting in the middle breaks backwards compatibility.
   typedef struct remixapi_Interface {
@@ -1205,6 +1237,8 @@ extern "C" {
     PFN_remixapi_dxvk_CopyRenderingOutputSynced dxvk_CopyRenderingOutputSynced;
     PFN_remixapi_dxvk_SetDevMenuWindow          dxvk_SetDevMenuWindow;
     PFN_remixapi_dxvk_CopyRenderingOutputWaitOnly dxvk_CopyRenderingOutputWaitOnly;
+    PFN_remixapi_dxvk_CreateScreenOverlayImage  dxvk_CreateScreenOverlayImage;
+    PFN_remixapi_dxvk_SetScreenOverlayEnabled   dxvk_SetScreenOverlayEnabled;
   } remixapi_Interface;
 
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(

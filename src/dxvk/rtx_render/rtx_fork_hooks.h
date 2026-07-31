@@ -381,6 +381,49 @@ namespace dxvk {
       IDirect3DSurface9*                surface,
       remixapi_dxvk_ExternalMemoryInfo* out_info);
 
+    // Creates an exportable image for a host to draw its 2D interface into, and reports the external
+    // memory behind it so the host can import it. Remix then composites it over the path-traced image
+    // every frame, once enabled.
+    //
+    // The alternative already exists and is DrawScreenOverlay, which takes CPU pixels. At 4K that is
+    // roughly 33MB pushed across the bus per frame, which for the OpenMW host is precisely the round
+    // trip that had to be removed to reach a playable frame time, so paying it again to get a menu on
+    // screen is not a trade worth making.
+    //
+    // Remix creates the image rather than adapting one from a shared D3D9 surface, for control over
+    // the format. D3D9 would force D3DFMT_A8R8G8B8, which DXVK maps to VK_FORMAT_B8G8R8A8_UNORM, and
+    // an OpenGL producer writing RGBA8 into memory Vulkan reads as BGRA8 has its channels swapped.
+    // Owning the allocation means asking for VK_FORMAT_R8G8B8A8_UNORM and needing no swizzle.
+    //
+    // Created in VK_IMAGE_LAYOUT_GENERAL deliberately. The producer is another API which does not
+    // participate in Vulkan layout tracking, so there is no correct moment to transition; GENERAL can
+    // be sampled and needs no ownership transfer.
+    //
+    // Calling again with different dimensions replaces the image and invalidates the previous handle.
+    // The handle stays owned by Remix.
+    // No private-member access; no friend declaration needed.
+    // Implementation in rtx_fork_api_entry.cpp.
+    remixapi_ErrorCode createScreenOverlayImage(
+      D3D9DeviceEx*                     remixDevice,
+      uint32_t                          width,
+      uint32_t                          height,
+      remixapi_dxvk_ExternalMemoryInfo* out_info);
+
+    // Turns compositing of the shared overlay image on or off, and sets its opacity.
+    //
+    // Separate from creation so a host can stop compositing without giving up the allocation -- during
+    // a loading screen, for instance, where the interface is not being drawn and a stale image would
+    // otherwise stay on screen.
+    remixapi_ErrorCode setScreenOverlayEnabled(
+      remixapi_Bool enabled,
+      float         opacity);
+
+    // Hands the shared overlay to the compositing pass, or reports that there is none.
+    //
+    // Exists because the state lives beside the other API entry points while the dispatch that
+    // consumes it lives in rtx_fork_overlay.cpp.
+    bool getSharedScreenOverlay(Rc<DxvkImageView>& out_view, float& out_opacity);
+
     // Creates on first call, and reports, the exportable binary semaphore pair used to order the
     // copy into a shared surface against a foreign API's sampling of it. Companion to
     // getSurfaceExternalMemory: that one makes the pixels reachable from another API, this one makes

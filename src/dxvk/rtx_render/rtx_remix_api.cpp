@@ -1909,6 +1909,23 @@ namespace {
     return dxvk::fork_hooks::getSurfaceExternalMemory(tryAsDxvk(), surface, out_info);
   }
 
+  remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_CreateScreenOverlayImage(
+    uint32_t width,
+    uint32_t height,
+    remixapi_dxvk_ExternalMemoryInfo* out_info) {
+    std::lock_guard lock { s_mutex };
+    return dxvk::fork_hooks::createScreenOverlayImage(tryAsDxvk(), width, height, out_info);
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_SetScreenOverlayEnabled(
+    remixapi_Bool enabled,
+    float opacity) {
+    // No device check: this only flips a flag that the compositing pass reads, so it is legitimate
+    // before the device is registered or after it has gone.
+    std::lock_guard lock { s_mutex };
+    return dxvk::fork_hooks::setScreenOverlayEnabled(enabled, opacity);
+  }
+
   remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_SetDevMenuWindow(void* hwnd) {
     std::lock_guard lock { s_mutex };
     // Deliberately no device check: this only records which window the overlay should measure and
@@ -2685,6 +2702,8 @@ extern "C"
       interf.dxvk_CopyRenderingOutputSynced = remixapi_dxvk_CopyRenderingOutputSynced;
       interf.dxvk_CopyRenderingOutputWaitOnly = remixapi_dxvk_CopyRenderingOutputWaitOnly;
       interf.dxvk_SetDevMenuWindow = remixapi_dxvk_SetDevMenuWindow;
+      interf.dxvk_CreateScreenOverlayImage = remixapi_dxvk_CreateScreenOverlayImage;
+      interf.dxvk_SetScreenOverlayEnabled = remixapi_dxvk_SetScreenOverlayEnabled;
       interf.dxvk_CopyRenderingOutput = remixapi_dxvk_CopyRenderingOutput;
       interf.dxvk_SetDefaultOutput = remixapi_dxvk_SetDefaultOutput;
       interf.pick_RequestObjectPicking = remixapi_pick_RequestObjectPicking;
@@ -2716,9 +2735,12 @@ extern "C"
     // window the user actually sees rather than the one the swapchain happens to sit on.
     // 360 -> 368: dxvk_CopyRenderingOutputWaitOnly, for a consumer that can signal a shared semaphore
     // but cannot wait on one -- which is every OpenGL consumer on the current NVIDIA driver.
+    // 368 -> 384: dxvk_CreateScreenOverlayImage + dxvk_SetScreenOverlayEnabled, so a host can draw its
+    // 2D interface into memory Remix samples instead of uploading 33MB of pixels a frame through
+    // DrawScreenOverlay.
     // Appending is source- and binary-compatible for existing callers, so the API
     // minor is deliberately NOT bumped -- older clients simply never read the slot.
-    static_assert(sizeof(interf) == 368, "Add/remove function registration");
+    static_assert(sizeof(interf) == 384, "Add/remove function registration");
 
     *out_result = interf;
     return REMIXAPI_ERROR_CODE_SUCCESS;

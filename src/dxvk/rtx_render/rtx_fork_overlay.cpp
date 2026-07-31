@@ -203,7 +203,55 @@ namespace fork_hooks {
   // and m_device. A friend declaration for this function is required in
   // RtxContext (see rtx_context.h).
   // ---------------------------------------------------------------------------
+  // Alpha-composites one overlay view over the tone-mapped output. Shared by the two ways an overlay
+  // can arrive: a host-uploaded staging buffer, and an image the host rendered into directly.
+  static void blendScreenOverlay(RtxContext& ctx, Resources::RaytracingOutput& rtOutput,
+                                 const Rc<DxvkImageView>& overlayView, float opacity, bool flipV) {
+    ctx.setPushConstantBank(DxvkPushConstantBank::RTX);
+
+    auto& finalOutput = rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite);
+    const VkExtent3D outputSize = finalOutput.image->info().extent;
+    const VkExtent3D workgroups = util::computeBlockCount(
+      outputSize, VkExtent3D { SCREEN_OVERLAY_TILE_SIZE, SCREEN_OVERLAY_TILE_SIZE, 1 });
+
+    ScreenOverlayArgs pushArgs = {};
+    pushArgs.imageSize = { outputSize.width, outputSize.height };
+    pushArgs.opacity = opacity;
+    pushArgs.flipV = flipV ? 1u : 0u;
+    ctx.pushConstants(0, sizeof(pushArgs), &pushArgs);
+
+    ctx.bindResourceView(SCREEN_OVERLAY_INPUT_OUTPUT, finalOutput.view, nullptr);
+    ctx.bindResourceView(SCREEN_OVERLAY_TEXTURE, overlayView, nullptr);
+    ctx.bindResourceSampler(SCREEN_OVERLAY_TEXTURE,
+      ctx.getResourceManager().getSampler(
+        VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE));
+
+    ctx.bindShader(VK_SHADER_STAGE_COMPUTE_BIT, ScreenOverlayShader::getShader());
+    ctx.dispatch(workgroups.width, workgroups.height, workgroups.depth);
+  }
+
   void dispatchScreenOverlay(RtxContext& ctx, Resources::RaytracingOutput& rtOutput) {
+    // An overlay the host rendered into directly, if there is one.
+    //
+    // Taken before the uploaded path and returning immediately, because the two are alternatives
+    // rather than layers: a host either draws into shared memory or hands over pixels, and compositing
+    // both would blend the interface twice.
+    //
+    // Nothing is consumed or cleared here. The image belongs to the host and is composited every frame
+    // until it turns the overlay off, so unlike the uploaded path there is no per-frame handshake.
+    {
+      Rc<DxvkImageView> sharedView;
+      float sharedOpacity = 1.0f;
+      if (getSharedScreenOverlay(sharedView, sharedOpacity)) {
+        ScopedGpuProfileZone(&ctx, "Screen Overlay (shared)");
+        // Flipped, because the producer of a shared image is an OpenGL host rendering bottom-up. Not a
+        // choice this side gets to make per-caller: the uploaded path below is fed top-down CPU pixels and
+        // must not be flipped, which is why the flag exists rather than the shader always flipping.
+        blendScreenOverlay(ctx, rtOutput, sharedView, sharedOpacity, /* flipV */ true);
+        return;
+      }
+    }
+
     if (!ctx.m_pendingScreenOverlay.has_value()) {
       return;
     }
@@ -268,27 +316,7 @@ namespace fork_hooks {
                             overlay.stagingBuffer, 0, 0, 0);
     }
 
-    // Dispatch overlay blend compute shader
-    ctx.setPushConstantBank(DxvkPushConstantBank::RTX);
-
-    auto& finalOutput         = rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite);
-    const VkExtent3D outputSize = finalOutput.image->info().extent;
-    const VkExtent3D workgroups = util::computeBlockCount(
-      outputSize, VkExtent3D { SCREEN_OVERLAY_TILE_SIZE, SCREEN_OVERLAY_TILE_SIZE, 1 });
-
-    ScreenOverlayArgs pushArgs = {};
-    pushArgs.imageSize = { outputSize.width, outputSize.height };
-    pushArgs.opacity   = overlay.opacity;
-    ctx.pushConstants(0, sizeof(pushArgs), &pushArgs);
-
-    ctx.bindResourceView(SCREEN_OVERLAY_INPUT_OUTPUT, finalOutput.view, nullptr);
-    ctx.bindResourceView(SCREEN_OVERLAY_TEXTURE, ctx.m_screenOverlayView, nullptr);
-    ctx.bindResourceSampler(SCREEN_OVERLAY_TEXTURE,
-      ctx.getResourceManager().getSampler(
-        VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE));
-
-    ctx.bindShader(VK_SHADER_STAGE_COMPUTE_BIT, ScreenOverlayShader::getShader());
-    ctx.dispatch(workgroups.width, workgroups.height, workgroups.depth);
+    blendScreenOverlay(ctx, rtOutput, ctx.m_screenOverlayView, overlay.opacity, /* flipV */ false);
 
     // Clear pending overlay after dispatch
     ctx.m_pendingScreenOverlay.reset();

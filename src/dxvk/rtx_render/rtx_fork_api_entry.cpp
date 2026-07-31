@@ -464,6 +464,161 @@ namespace fork_hooks {
   }
 
   // ---------------------------------------------------------------------------
+  // Shared screen-overlay image (fork addition)
+  //
+  // An exportable image a host draws its 2D interface into, which Remix composites
+  // over the path-traced output. The counterpart to DrawScreenOverlay, without the
+  // upload: that path stages CPU pixels into a buffer and copies them into an image
+  // every frame, roughly 33MB at 4K, which is the same round trip the OpenMW host
+  // spent this morning removing from its render loop.
+  //
+  // Held here rather than on RtxContext so it survives whatever the context does,
+  // and because this is where the other externally shared resources live. The
+  // dispatch that consumes it is in rtx_fork_overlay.cpp and reaches it through
+  // getSharedScreenOverlay.
+  // ---------------------------------------------------------------------------
+  namespace {
+    struct SharedScreenOverlay {
+      Rc<DxvkImage>     image;
+      Rc<DxvkImageView> view;
+      uint32_t          width = 0;
+      uint32_t          height = 0;
+      float             opacity = 1.0f;
+      bool              enabled = false;
+    };
+
+    SharedScreenOverlay s_sharedScreenOverlay;
+    // Guards the struct above. Creation happens on the host's thread during setup while the
+    // compositing pass reads it on the render thread every frame, so these are not the same thread
+    // even though creation is a one-off.
+    dxvk::mutex s_sharedScreenOverlayMutex;
+  }
+
+  remixapi_ErrorCode createScreenOverlayImage(
+      D3D9DeviceEx*                     remixDevice,
+      uint32_t                          width,
+      uint32_t                          height,
+      remixapi_dxvk_ExternalMemoryInfo* out_info) {
+    if (!remixDevice) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!out_info || width == 0 || height == 0) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+
+    const Rc<DxvkDevice> device = remixDevice->GetDXVKDevice();
+    if (device.ptr() == nullptr) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    DxvkImageCreateInfo imageInfo = {};
+    imageInfo.type = VK_IMAGE_TYPE_2D;
+    // Chosen so an OpenGL producer writing RGBA8 needs no swizzle. Going through a shared D3D9
+    // surface would have forced BGRA8 and a channel swap somewhere.
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.flags = 0;
+    imageInfo.sampleCount = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.extent = { width, height, 1 };
+    imageInfo.numLayers = 1;
+    imageInfo.mipLevels = 1;
+    // COLOR_ATTACHMENT because the foreign API renders into it, SAMPLED because the compositing pass
+    // reads it, TRANSFER_DST so it can be cleared from this side if it ever needs to be. Vulkan usage
+    // has to cover everything any API will do with the allocation, not just what Remix does.
+    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+      | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imageInfo.stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    imageInfo.access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    // GENERAL, and not SHADER_READ_ONLY_OPTIMAL, because the producer is another API that does not
+    // track Vulkan layouts. There is no point at which a transition could correctly be issued, and a
+    // GENERAL image is sampleable without one.
+    imageInfo.layout = VK_IMAGE_LAYOUT_GENERAL;
+    // What makes DxvkImage attach VkExportMemoryAllocateInfo and take a dedicated allocation, which is
+    // in turn what gives sharedHandle() something to return. KMT to match the handle type the rest of
+    // this integration already imports.
+    imageInfo.sharing.mode = DxvkSharedHandleMode::Export;
+    imageInfo.sharing.type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT;
+
+    Rc<DxvkImage> image = device->createImage(
+      imageInfo,
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      DxvkMemoryStats::Category::RTXRenderTarget,
+      "Shared screen overlay image");
+    if (image.ptr() == nullptr) {
+      Logger::err("createScreenOverlayImage: could not create the image");
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    const HANDLE handle = image->sharedHandle();
+    if (handle == INVALID_HANDLE_VALUE || handle == nullptr) {
+      Logger::err("createScreenOverlayImage: the image was created but is not shareable, so the host "
+                  "has no way to reach it");
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    DxvkImageViewCreateInfo viewInfo = {};
+    viewInfo.type = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = imageInfo.format;
+    viewInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    viewInfo.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.minLevel = 0;
+    viewInfo.numLevels = 1;
+    viewInfo.minLayer = 0;
+    viewInfo.numLayers = 1;
+
+    Rc<DxvkImageView> view = device->createImageView(image, viewInfo);
+    if (view.ptr() == nullptr) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    {
+      std::lock_guard lock { s_sharedScreenOverlayMutex };
+      // Replacing the image drops the previous one, whose handle the host must therefore stop using.
+      // Left enabled as it was: a host resizing its overlay should not have to re-enable it.
+      s_sharedScreenOverlay.image = image;
+      s_sharedScreenOverlay.view = view;
+      s_sharedScreenOverlay.width = width;
+      s_sharedScreenOverlay.height = height;
+    }
+
+    *out_info = {};
+    out_info->handle = reinterpret_cast<uint64_t>(handle);
+    out_info->memorySize = static_cast<uint64_t>(image->memSize());
+    out_info->memoryOffset = 0;
+    out_info->handleType = static_cast<uint32_t>(imageInfo.sharing.type);
+    out_info->format = static_cast<uint32_t>(imageInfo.format);
+    out_info->width = width;
+    out_info->height = height;
+    out_info->optimalTiling = 1u;
+
+    Logger::info(str::format("createScreenOverlayImage: ", width, "x", height,
+      " R8G8B8A8_UNORM, ", image->memSize() >> 10, " KiB, shareable"));
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode setScreenOverlayEnabled(remixapi_Bool enabled, float opacity) {
+    std::lock_guard lock { s_sharedScreenOverlayMutex };
+    if (enabled && s_sharedScreenOverlay.view.ptr() == nullptr) {
+      Logger::warn("setScreenOverlayEnabled: no shared overlay image exists yet; call "
+                   "dxvk_CreateScreenOverlayImage first");
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    s_sharedScreenOverlay.enabled = (enabled != 0);
+    s_sharedScreenOverlay.opacity = opacity;
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  bool getSharedScreenOverlay(Rc<DxvkImageView>& out_view, float& out_opacity) {
+    std::lock_guard lock { s_sharedScreenOverlayMutex };
+    if (!s_sharedScreenOverlay.enabled || s_sharedScreenOverlay.view.ptr() == nullptr) {
+      return false;
+    }
+    out_view = s_sharedScreenOverlay.view;
+    out_opacity = s_sharedScreenOverlay.opacity;
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
   // Output synchronisation state (fork addition, 2026-07-28)
   //
   // A pair of exportable BINARY semaphores that order the copy into a shared

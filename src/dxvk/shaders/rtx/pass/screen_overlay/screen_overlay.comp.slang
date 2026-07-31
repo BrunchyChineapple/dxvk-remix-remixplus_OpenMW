@@ -39,6 +39,10 @@ void main(uint2 threadId : SV_DispatchThreadID) {
   // Map pixel position to normalized UV for overlay sampling
   float2 uv = (float2(threadId) + 0.5f) / float2(cb.imageSize);
 
+  // An overlay rendered by OpenGL has row zero at the bottom, where this samples row zero at the top.
+  if (cb.flipV != 0)
+    uv.y = 1.0f - uv.y;
+
   float4 overlay = OverlayTexture.SampleLevel(uv, 0);
   float4 target = InOutImage[threadId];
 

@@ -32,7 +32,14 @@
 struct ScreenOverlayArgs {
   uint2 imageSize;
   float opacity;
-  float _pad;
+  // Sample the overlay bottom-up.
+  //
+  // For overlays produced by another API rather than uploaded as pixels. An OpenGL framebuffer's origin is
+  // bottom-left where this samples from top-left, so a GL-rendered overlay arrives vertically mirrored.
+  // Callers handing over CPU pixels are already top-down and leave this at zero.
+  //
+  // Occupies what was explicit padding, so the struct size is unchanged.
+  uint flipV;
 };
 
 #endif // SCREEN_OVERLAY_H
