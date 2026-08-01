@@ -2504,7 +2504,101 @@ namespace dxvk {
       // fork_hooks::externalDrawMaterialReplacement, which merges the replacement over the host's material
       // for this reason. This is the geometry path's equivalent.
       MaterialData renderMaterialData = determineMaterialData(nullptr, state.drawCall);
-      drawReplacements(ctx, &replacementDrawCall, pReplacements, renderMaterialData, replacementInstance);
+
+      // Reuse last frame's work when nothing about this draw changed, instead of rebuilding every frame.
+      //
+      // drawReplacements is the dynamic path: a full geometry cache pass and instance update, which for a
+      // replacement means rebuilding its acceleration structure. Taking it unconditionally is what made a
+      // replaced mesh cost a frame or more to look at -- the census office shield is 1,926,001 triangles and
+      // was being rebuilt from scratch every frame it stayed in view.
+      //
+      // The gate mirrors the D3D9 path's usePreservePath, minus the conditions that cannot arise here.
+      // Terrain cascades and override-material particle systems belong to legacy draws; a particle emitter
+      // submitted through the API takes the particle path and never reaches this branch.
+      //
+      // Transform drift needs no dirty flag on this path because the transform is part of the external
+      // lookup key: an object that moves resolves to a different ReplacementInstance rather than a stale
+      // one. alreadyWired keeps the first sighting on the dynamic path, since preserving requires prims
+      // that only a dynamic pass creates.
+      const uint32_t currentFrameId = m_device->getCurrentFrameId();
+      const bool secondSubmissionThisFrame = (replacementInstance->frameLastSeen == currentFrameId);
+      const bool activeReplacementsMatch = replacementInstance->activeReplacements == pReplacements;
+      const bool alreadyWired = replacementInstance->root.getUntyped() != nullptr;
+      const bool cachedTexturesValidForPreserve =
+          m_device->getCommon()->getTextureManager().getTextureCacheGeneration() ==
+          m_textureCacheGenerationValidForPreserve;
+
+      // A sibling draw may already have rebound a shared BlasEntry to its own data this frame, in which
+      // case the cached buffers no longer describe this draw and preserving them would render the wrong
+      // geometry. Same check the D3D9 path makes, for the same reason.
+      auto blasAlreadyTouchedByOtherDraw = [replacementInstance, currentFrameId]() -> bool {
+        for (const auto& prim : replacementInstance->prims) {
+          RtInstance* inst = prim.getInstance();
+          if (inst == nullptr) {
+            continue;
+          }
+          BlasEntry* pBlas = inst->getBlas();
+          if (pBlas != nullptr && pBlas->frameLastTouched == currentFrameId) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      const bool usePreservePath =
+          RtxOptions::enablePreservePath() &&
+          alreadyWired &&
+          activeReplacementsMatch &&
+          replacementInstance->dirtyFlags.isClear() &&
+          !RtxOptionManager::isDrawcallTranslationInvalid() &&
+          !secondSubmissionThisFrame &&
+          !blasAlreadyTouchedByOtherDraw() &&
+          cachedTexturesValidForPreserve;
+
+      if (usePreservePath) {
+        preserveReplacementInstance(ctx, replacementDrawCall, pReplacements, replacementInstance);
+      } else {
+        if (!activeReplacementsMatch) {
+          replacementInstance->clear();
+        }
+        replacementInstance->dirtyFlags.clr(ReplacementInstance::kDynamicFeatureMask);
+        drawReplacements(ctx, &replacementDrawCall, pReplacements, renderMaterialData, replacementInstance);
+      }
+
+      // Record that this replacement was submitted this frame, which drawReplacements does not do and this
+      // branch previously returned without doing.
+      //
+      // Everything downstream that decides whether a replacement survives reads frameLastSeen. The draw
+      // call tracker destroys a ReplacementInstance once frameLastSeen falls numFramesToKeepObjects behind
+      // the current frame, and treats one as stable only when frameLastSeen has advanced past frameCreated.
+      // Left at its initial value both of those go the wrong way: the instance is collected on a timer and
+      // rebuilt from scratch, and it is never once considered stable.
+      //
+      // Small replacements survive that badly enough to flicker. A large one does not survive it at all --
+      // the census office shield is 1,926,001 triangles, so its acceleration structure has no chance to
+      // finish before the instance backing it is torn down, which is why it was confirmed built, instanced,
+      // materialled and correctly placed yet never appeared on screen.
+      //
+      // The remaining fields mirror what the D3D9 path stores after its own call to drawReplacements. They
+      // are the inputs to next frame's dirty-flag comparison, so leaving them stale makes an unchanged
+      // draw look changed and forces a rebuild that was not needed.
+      replacementInstance->frameLastSeen = m_device->getCurrentFrameId();
+      replacementInstance->categoryFlags = state.drawCall.getCategoryFlags().raw();
+      replacementInstance->isSkinned = state.drawCall.getSkinningState().numBones > 0;
+      replacementInstance->textureTransform = state.drawCall.getTransformData().textureTransform;
+      replacementInstance->texgenMode = state.drawCall.getTransformData().texgenMode;
+
+      // Anti-culling needs an object-space extent and the transform it was measured in. The submeshes are
+      // the host's own geometry rather than the replacement's, which is what the non-replacement path below
+      // uses too, and is the right frame of reference: it is where the game put the object.
+      AxisAlignedBoundingBox replacementBBox;
+      for (size_t i = 0; i < submeshes.size(); i++) {
+        replacementBBox.unionWith(submeshes[i].boundingBox);
+      }
+      if (replacementBBox.isValid()) {
+        replacementInstance->geometryBoundingBox = replacementBBox;
+        replacementInstance->objectToWorld = xform;
+      }
       return;
     }
 
