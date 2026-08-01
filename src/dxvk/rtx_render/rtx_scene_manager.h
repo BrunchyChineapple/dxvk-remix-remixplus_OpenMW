@@ -442,6 +442,15 @@ private:
   // stale when manageTextureVram clears the cache so the next frame is all-dynamic.
   uint32_t m_textureCacheGenerationValidForPreserve = 0;
 
+  // Paces first-time replacement builds for API-submitted meshes, so that entering a cell does not put
+  // every one of its replacement acceleration structure builds in a single frame. Holds the distinct mesh
+  // hashes admitted in the current frame, since the cost is per geometry rather than per instance. See
+  // the use site in submitExternalDraw; ~0u forces a reset on the first frame it is consulted.
+  uint32_t m_externalReplacementBuildFrame = ~0u;
+  fast_unordered_set m_externalReplacementBuildMeshes;
+  uint64_t m_externalReplacementDeferrals = 0;
+  uint64_t m_externalReplacementDeferralsLogged = 0;
+
   // Replacement material hash tracking for current frame (hash -> count)
   std::unordered_map<XXH64_hash_t, uint32_t> m_currentFrameReplacementMaterialHashes;
 

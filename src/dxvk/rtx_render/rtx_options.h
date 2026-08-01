@@ -490,6 +490,17 @@ namespace dxvk {
     RTX_OPTION("rtx", bool, resolvePreCombinedMatrices, true, "");
 
     RTX_OPTION("rtx", uint32_t, minPrimsInDynamicBLAS, 1000, "The minimum number of triangles required to promote a mesh to it's own BLAS, otherwise it lands in the merged BLAS with multiple other meshes.");
+    RTX_OPTION("rtx", uint32_t, maxExternalReplacementBuildsPerFrame, 0,
+               "How many distinct API-submitted meshes may build a replacement for the first time in one\n"
+               "frame. Counted per mesh, not per instance: further instances of a mesh already admitted\n"
+               "this frame pass freely, because they reuse its acceleration structure.\n"
+               "A first sighting has to take the dynamic path, which builds the replacement's acceleration\n"
+               "structure; every later frame reuses it. Entering a cell sights them all at once, and a\n"
+               "single frame carrying a few hundred high-poly builds stalls the GPU long enough for the\n"
+               "driver to reset it. Deferred meshes draw their original geometry that frame and take their\n"
+               "turn in a later one, so the scene fills in over a fraction of a second rather than\n"
+               "hitching. Raise it if replacements appear too slowly, lower it if entering a cell hitches.\n"
+               "0 removes the limit and restores the previous behaviour.");
     RTX_OPTION("rtx", uint32_t, maxPrimsInMergedBLAS, 50000, "The maximum number of triangles for a mesh that can be in the merged BLAS.  ");
     RTX_OPTION_FLAG("rtx", bool, forceMergeAllMeshes, false, RtxOptionFlags::NoSave, "Force merges all meshes into as few BLAS as possible.  This is generally not desirable for performance, but can be a useful debugging tool.");
     RTX_OPTION_FLAG("rtx", bool, minimizeBlasMerging, false, RtxOptionFlags::NoSave, "Minimize BLAS merging to the minimum possible, this option tries to give all meshes their own BLAS.  This is generally not desirable forperformance, but can be a useful debugging tool.");

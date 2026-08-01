@@ -948,10 +948,17 @@ namespace dxvk {
           //
           // This is the same correction already made on the material path in
           // fork_hooks::externalDrawMaterialReplacement, which documents having hit exactly this.
+          // Both material types carry a merge(); gating on Opaque alone left translucent replacements
+          // taking the replacement's material wholesale, which is the case this exists to avoid. The pack
+          // authors glass and foliage against AperturePBR_Translucent, so those entries were still landing
+          // on a material with no albedo and rendering blank.
           MaterialData merged = *replacement.materialData;
-          if (merged.getType() == MaterialDataType::Opaque
-              && hostMaterialData.getType() == MaterialDataType::Opaque) {
-            merged.getOpaqueMaterialData().merge(hostMaterialData.getOpaqueMaterialData());
+          if (merged.getType() == hostMaterialData.getType()) {
+            if (merged.getType() == MaterialDataType::Opaque) {
+              merged.getOpaqueMaterialData().merge(hostMaterialData.getOpaqueMaterialData());
+            } else if (merged.getType() == MaterialDataType::Translucent) {
+              merged.getTranslucentMaterialData().merge(hostMaterialData.getTranslucentMaterialData());
+            }
           }
           renderMaterialData = merged;
         }
@@ -2479,7 +2486,72 @@ namespace dxvk {
     ReplacementInstance* replacementInstance = m_drawCallTracker.findOrCreateReplacementInstance(externalKey);
     replacementInstance->dirtyFlags.clr(ReplacementInstance::kDynamicFeatureMask);
 
-    if (std::vector<AssetReplacement>* pReplacements = fork_hooks::externalDrawMeshReplacement(*m_pReplacer, meshHash)) {
+    std::vector<AssetReplacement>* pReplacements = fork_hooks::externalDrawMeshReplacement(*m_pReplacer, meshHash);
+
+    // Ration first-time replacement builds across frames.
+    //
+    // A mesh being sighted for the first time has to take the dynamic path, which builds its
+    // replacement's acceleration structure. Every frame after that reuses it via the preserve path
+    // above, so the cost is once per mesh -- but entering a cell sights every mesh in it at once.
+    // Ald'ruhn binds 197 distinct replacements, several of them high-poly, and putting all of those
+    // builds in one frame stalled the GPU for 19 seconds and lost the device to a driver reset.
+    //
+    // Deferring means falling through to the ordinary submission below, so the mesh draws its own
+    // geometry this frame and tries again next. The scene fills in over a fraction of a second instead
+    // of hitching, and nothing disappears while it waits, which is what skipping the draw entirely
+    // would have caused.
+    //
+    // Not synchronised: external draws are submitted from one thread, and the counter only paces work.
+    // Being off by one either way costs nothing.
+    // "Already built" has to mean built *for this replacement set*, not merely that prims exist.
+    //
+    // Testing root alone was wrong and made things worse. Deferring falls through to the ordinary
+    // submission, which wires prims for the original geometry and sets root -- so on the next frame the
+    // mesh looked built, took the replacement path anyway, found activeReplacements mismatched, cleared
+    // the instance and rebuilt it. Every mesh cycled wire, clear, rebuild, which flickered, and because
+    // nothing was actually deferred past one frame the builds still all landed together.
+    const bool replacementAlreadyWired = replacementInstance->root.getUntyped() != nullptr
+        && replacementInstance->activeReplacements == pReplacements;
+    bool deferReplacement = false;
+    if (pReplacements != nullptr && !replacementAlreadyWired) {
+      // Counted per distinct mesh, not per instance.
+      //
+      // The expense being paced is the acceleration structure build, and that is per geometry: the second
+      // instance of a mesh reuses the first one's BLAS from the draw call cache. A ReplacementInstance
+      // exists per mesh and transform, so a cell holds thousands of them against a couple of hundred
+      // distinct meshes -- counting instances therefore throttled cheap work and starved the expensive
+      // work, which is why nothing appeared. Instances of a mesh already admitted this frame pass freely.
+      const uint32_t budget = RtxOptions::maxExternalReplacementBuildsPerFrame();
+      const uint32_t frameId = m_device->getCurrentFrameId();
+      if (m_externalReplacementBuildFrame != frameId) {
+        m_externalReplacementBuildFrame = frameId;
+        m_externalReplacementBuildMeshes.clear();
+      }
+      if (m_externalReplacementBuildMeshes.find(meshHash) != m_externalReplacementBuildMeshes.end()) {
+        // Already admitted this frame; its build is in flight and further instances are cheap.
+      } else if (budget != 0 && m_externalReplacementBuildMeshes.size() >= budget) {
+        deferReplacement = true;
+        ++m_externalReplacementDeferrals;
+      } else {
+        m_externalReplacementBuildMeshes.insert(meshHash);
+      }
+
+      // Report what the pacing is actually doing, because three attempts at it have now been wrong for
+      // three different reasons and the failures are indistinguishable on screen: a starved budget and a
+      // replacement that never binds both show the original mesh.
+      //
+      // Cumulative deferrals is the figure that separates them. It should climb while a cell fills in and
+      // then stop. Still climbing steadily means meshes are never becoming wired, so they re-enter the
+      // budget every frame and starve each other -- which is a bug here, not a budget that is too small.
+      if (m_externalReplacementDeferrals - m_externalReplacementDeferralsLogged >= 20000) {
+        m_externalReplacementDeferralsLogged = m_externalReplacementDeferrals;
+        Logger::info(str::format("[RTX-Replacement] pacing: budget ", budget,
+            ", distinct meshes admitted this frame ", m_externalReplacementBuildMeshes.size(),
+            ", cumulative deferred draws ", m_externalReplacementDeferrals));
+      }
+    }
+
+    if (pReplacements != nullptr && !deferReplacement) {
       // Copy the DrawCallState so we don't mutate the caller's state. Point geometryData
       // at submeshes[0] as the replacement geometry template, clear externalMaterial so
       // the USD replacement material takes precedence, and use a neutral default material
@@ -2490,8 +2562,18 @@ namespace dxvk {
       replacementGeometry.cullMode = state.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
       replacementGeometry.externalMaterial = nullptr;
 
-      // Resolve the host's material as the base, exactly as the D3D9 path does, rather than starting from
-      // a default-constructed one.
+      // Resolve the host's material the way the ordinary submission below does, from the submesh's own
+      // external material handle.
+      //
+      // determineMaterialData(state.drawCall) was wrong here and is why replaced surfaces stayed white:
+      // an API draw carries no useful material on the DrawCallState at this point. The material arrives
+      // through submeshes[i].externalMaterial and is resolved in the loop further down, which this branch
+      // returns before reaching -- so the base being merged under the replacement was empty, leaving the
+      // surface with no albedo, which is exactly the failure the merge exists to prevent.
+      //
+      // externalDrawMaterialReplacement is applied first so a material-level replacement for this surface
+      // still contributes, matching the ordinary path. It may repoint the pointer into mergeStorage, so
+      // that storage has to outlive the copy taken from it.
       //
       // drawReplacements only overwrites this when the replacement carries its own materialData, and it
       // assigns wholesale with no merge. A pack entry that authors no material -- or a partial `over` that
@@ -2503,7 +2585,14 @@ namespace dxvk {
       // The same mistake on the material path is already fixed and documented in
       // fork_hooks::externalDrawMaterialReplacement, which merges the replacement over the host's material
       // for this reason. This is the geometry path's equivalent.
-      MaterialData renderMaterialData = determineMaterialData(nullptr, state.drawCall);
+      MaterialData hostMergeStorage;
+      const MaterialData* pHostMaterial = m_pReplacer->accessExternalMaterial(submeshes[0].externalMaterial);
+      if (pHostMaterial != nullptr) {
+        fork_hooks::externalDrawMaterialReplacement(*m_pReplacer, pHostMaterial, hostMergeStorage);
+      }
+      static MaterialData s_defaultExternalMaterial(LegacyMaterialData::createDefault());
+      MaterialData renderMaterialData
+          = (pHostMaterial != nullptr) ? *pHostMaterial : s_defaultExternalMaterial;
 
       // Reuse last frame's work when nothing about this draw changed, instead of rebuilding every frame.
       //
@@ -2523,7 +2612,7 @@ namespace dxvk {
       const uint32_t currentFrameId = m_device->getCurrentFrameId();
       const bool secondSubmissionThisFrame = (replacementInstance->frameLastSeen == currentFrameId);
       const bool activeReplacementsMatch = replacementInstance->activeReplacements == pReplacements;
-      const bool alreadyWired = replacementInstance->root.getUntyped() != nullptr;
+      const bool alreadyWired = replacementAlreadyWired;
       const bool cachedTexturesValidForPreserve =
           m_device->getCommon()->getTextureManager().getTextureCacheGeneration() ==
           m_textureCacheGenerationValidForPreserve;
