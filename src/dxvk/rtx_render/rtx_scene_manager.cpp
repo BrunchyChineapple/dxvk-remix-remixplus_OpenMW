@@ -913,6 +913,13 @@ namespace dxvk {
       ONCE(Logger::err("pReplacements should never be nullptr in SceneManager::drawReplacements"));
       return;
     }
+    // The game's own material, kept aside before the loop starts overwriting renderMaterialData.
+    //
+    // Needed as a stable base for the merge below. renderMaterialData is a reference that the loop
+    // reassigns per replacement, so merging against it would fold each entry into the previous entry's
+    // result rather than into the game's material.
+    const MaterialData hostMaterialData = renderMaterialData;
+
     // If the index contains an RtInstance, get a pointer to it.
     auto getExistingInstance = [replacementInstance](size_t idx) -> RtInstance* {
       if (replacementInstance->prims.size() <= idx) {
@@ -931,7 +938,22 @@ namespace dxvk {
         // Only meaningful when geometry is replaced (eMesh); the includeOriginal branch keeps the
         // game's original material data.
         if (!replacement.includeOriginal && replacement.type == AssetReplacement::eMesh && replacement.materialData != nullptr) {
-          renderMaterialData = *replacement.materialData;
+          // Merge the game's material underneath rather than assigning the replacement's wholesale.
+          //
+          // Most entries in a real pack are partial: an `over` that authors roughness, or a normal map, and
+          // nothing else. Assigning such an entry directly hands the surface a material with no albedo
+          // texture, which renders black -- measured at 9 of 40 replacements in one census office frame.
+          // merge() takes each field the USD did not author from the argument, so the pack keeps what it
+          // specified and the rest comes back from the game.
+          //
+          // This is the same correction already made on the material path in
+          // fork_hooks::externalDrawMaterialReplacement, which documents having hit exactly this.
+          MaterialData merged = *replacement.materialData;
+          if (merged.getType() == MaterialDataType::Opaque
+              && hostMaterialData.getType() == MaterialDataType::Opaque) {
+            merged.getOpaqueMaterialData().merge(hostMaterialData.getOpaqueMaterialData());
+          }
+          renderMaterialData = merged;
         }
 
         const RtxParticleSystemDesc* pParticleSystemDesc = replacement.particleSystem.has_value() ? &replacement.particleSystem.value() : nullptr;
@@ -2468,7 +2490,20 @@ namespace dxvk {
       replacementGeometry.cullMode = state.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
       replacementGeometry.externalMaterial = nullptr;
 
-      MaterialData renderMaterialData = LegacyMaterialData().as<OpaqueMaterialData>();
+      // Resolve the host's material as the base, exactly as the D3D9 path does, rather than starting from
+      // a default-constructed one.
+      //
+      // drawReplacements only overwrites this when the replacement carries its own materialData, and it
+      // assigns wholesale with no merge. A pack entry that authors no material -- or a partial `over` that
+      // sets nothing but roughness -- therefore inherited whatever was passed in here, and a blank
+      // LegacyMaterialData has no albedo texture, so the replacement rendered black. Invisible in a dark
+      // interior, which is exactly how this presented: the original mesh correctly suppressed, high-poly
+      // geometry confirmed built and instanced at the right world position, and nothing on screen.
+      //
+      // The same mistake on the material path is already fixed and documented in
+      // fork_hooks::externalDrawMaterialReplacement, which merges the replacement over the host's material
+      // for this reason. This is the geometry path's equivalent.
+      MaterialData renderMaterialData = determineMaterialData(nullptr, state.drawCall);
       drawReplacements(ctx, &replacementDrawCall, pReplacements, renderMaterialData, replacementInstance);
       return;
     }
