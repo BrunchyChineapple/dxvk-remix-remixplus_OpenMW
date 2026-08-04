@@ -277,13 +277,13 @@ private:
   static constexpr const char* kExternalLightIntensityKey = "__externalLight.intensityFactor";
   static void externalLightRadiusOnChange(DxvkDevice* device);
   static void externalLightIntensityOnChange(DxvkDevice* device);
-  RTX_OPTION_ARGS("rtx.externalLight", float, radius, 0.6435f,
+  RTX_OPTION_ARGS("rtx.externalLight", float, radius, 1.0f,
                   "Emitter radius, in world units, for lights an API host creates.\n"
                   "Published to the host through the game-value store; the host decides whether to honour it.\n"
                   "A sphere light is a volume, so one placed against a wall has part of itself on the far side and leaks into the next room -- prefer raising intensityFactor over enlarging this.",
                   args.onChangeCallback = &externalLightRadiusOnChange, args.minValue = 0.001f,
                   args.flags = RtxOptionFlags::NoSave);
-  RTX_OPTION_ARGS("rtx.externalLight", float, intensityFactor, 0.65f,
+  RTX_OPTION_ARGS("rtx.externalLight", float, intensityFactor, 2.5f,
                   "Scales the radiance an API host derives for the lights it creates.\n"
                   "Published to the host through the game-value store; the host decides whether to honour it.\n"
                   "This is the knob to reach for when the scene is too dim or too bright, rather than the radius.",

@@ -603,6 +603,17 @@ namespace dxvk {
 
     if (reinitializeNrcContext) {
 
+      // Logged because the trigger matters and was not previously visible. A rebuild is not free -- it
+      // reallocates every NRC buffer -- and three of the four conditions above are things a player action
+      // can flip, so knowing which one fired is the difference between a legitimate rebuild and one worth
+      // suppressing.
+      Logger::info(str::format("[RTX Neural Radiance Cache] Rebuilding context: debug buffer ",
+        m_nrcCtx->isDebugBufferRequired(), " -> ", NrcOptions::s_nrcDebugBufferIsRequired,
+        ", custom network config ", m_delayedEnableCustomNetworkConfig, " -> ",
+        NrcCtxOptions::enableCustomNetworkConfig(), ", resolution ", m_nrcCtxSettings->frameDimensions.x,
+        "x", m_nrcCtxSettings->frameDimensions.y, " -> ", frameBeginCtx.downscaledExtent.width, "x",
+        frameBeginCtx.downscaledExtent.height));
+
       NrcCtxOptions::enableCustomNetworkConfig.setDeferred(m_delayedEnableCustomNetworkConfig);
 
       NrcContext::Configuration nrcContextCfg;

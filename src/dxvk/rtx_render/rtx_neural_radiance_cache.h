@@ -228,6 +228,14 @@ namespace dxvk {
     // Delaying definition to cpp so that nrc header does not need to be included in this scope
     std::unique_ptr<nrc::ContextSettings> m_nrcCtxSettings;
 
+    // Deliberately destroyed inline when a rebuild replaces it, not deferred. The NRC SDK is a process-wide
+    // singleton -- ~NrcContext is what calls nrc::vulkan::Context::Destroy, and constructing a second one
+    // before that has happened fails with "NRC Library has already been initialized". An attempt to hold the
+    // outgoing context for a few frames to avoid destroying it mid-frame therefore bricked NRC on the first
+    // rebuild, which is during the intro video.
+    //
+    // Destroying inline is also already safe: ~NrcContext waits for device idle before releasing anything,
+    // precisely so no in-flight work can still be reading its resources.
     Rc<NrcContext>         m_nrcCtx;
     Rc<DxvkBuffer>         m_numberOfTrainingRecordsStaging;   // CPU visible buffer keeping a track of number of NRC training records
 
