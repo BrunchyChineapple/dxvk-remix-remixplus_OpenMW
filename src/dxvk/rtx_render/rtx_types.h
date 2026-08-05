@@ -1050,6 +1050,29 @@ struct Tlas {
   VkBuildAccelerationStructureFlagsKHR flags = 0;
   Rc<DxvkAccelStructure> accelStructure = nullptr;
   Rc<DxvkAccelStructure> previousAccelStructure = nullptr;
+
+  // Strong references to every bottom-level structure this TLAS generation was built from, and the
+  // same for the generation before it.
+  //
+  // A TLAS stores raw device addresses for its instances, so nothing in the Vulkan object graph or in
+  // DxvkLifetimeTracker can discover that a TLAS depends on a particular BLAS. That dependency has to
+  // be expressed by ownership, and this is where it is expressed.
+  //
+  // Why it is needed even though AccelManager::buildTlas already tracks the whole BLAS pool on each
+  // frame's command list: that loop only tracks what is *in the pool at the moment it runs*.
+  // AccelManager::garbageCollection removes entries from the pool first, on a rule counted in CPU
+  // frames, and the previous-generation TLAS -- still bound every frame as
+  // BINDING_ACCELERATION_STRUCTURE_PREVIOUS for temporal passes -- keeps pointing at them. A frame
+  // count cannot close that hole, because the CPU frame counter advances on presents that submit no
+  // scene at all: across a cell load it can run several frames ahead while the GPU is still executing
+  // the last frame that did submit one, and the window expires with the work still outstanding.
+  //
+  // Holding the references here retires a BLAS when the TLAS generation that referenced it is
+  // superseded, which is the actual condition, and leaves the pool free to size itself however it
+  // likes. Observed failure without this: Error_DMA_PageFault with Destroyed = true on "BLAS Merged"
+  // during RTXDI Temporal Reuse and Integrate NEE.
+  std::vector<Rc<PooledBlas>> referencedBlases;
+  std::vector<Rc<PooledBlas>> previousReferencedBlases;
 };
 
 enum class RtxGeometryStatus {
