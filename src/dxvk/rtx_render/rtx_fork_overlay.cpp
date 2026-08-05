@@ -354,6 +354,9 @@ namespace fork_hooks {
   // below exists to cope with.
   // ---------------------------------------------------------------------------
   static std::atomic<HWND> s_devMenuOverlayHwnd { nullptr };
+  // Set once the host has presented, which disqualifies this path for the rest of the process. See
+  // dispatchDevMenuOverlay for why the two ImGui drivers must be exclusive and why the present path wins.
+  static std::atomic<bool> s_hostPresents { false };
   // Distinguishes "the host nominated this window" from "we fell back to the swapchain's window", so
   // the per-frame fallback cannot overwrite an explicit choice.
   static std::atomic<bool> s_devMenuOverlayHwndExplicit { false };
@@ -439,7 +442,37 @@ namespace fork_hooks {
     // the raw-input path. Sliders and drags work regardless, which is enough to tune with.
   }
 
+  void notifyHostPresented() {
+    s_hostPresents.store(true, std::memory_order_relaxed);
+  }
+
   void dispatchDevMenuOverlay(RtxContext& ctx, Resources::RaytracingOutput& rtOutput) {
+    // Stand down permanently once the host has presented even once.
+    //
+    // This function and the present path are two drivers of one ImGui frame, and the comment above
+    // records why they cannot coexist: ImGUI::render owns the whole frame from NewFrame to Render, so
+    // two callers per frame is two frames, not one frame drawn twice. What that comment assumed is that
+    // the two are naturally exclusive -- a host either consumes the output through the copy entry points
+    // or it presents, never both.
+    //
+    // A host can do both. OpenMW's Remix backend calls the copy path during startup and then switches to
+    // letting Remix present its own window; the arming is sticky, so from that point on both drivers ran
+    // every frame, on different threads, against ImGui's single unlocked global context. That is a data
+    // race on GImGui->CurrentWindow, and it presented as random CTDs: five of twelve collected crash
+    // dumps are null dereferences inside ImGui, split across this function and
+    // D3D9SwapChainEx::PresentImage. It is also why the developer menu was unreliable in-session.
+    //
+    // Resolved in favour of the present path rather than this one, on two grounds. It is upstream code
+    // and works for every host that reaches it, whereas this is a fork addition for hosts that never
+    // present. And it draws into the WSI image after the blit, so it composites correctly, where this
+    // path draws into m_finalOutput and depends on the copy reading it afterwards.
+    //
+    // One-way and never reset: a host that has presented will keep presenting, and a latch cannot be
+    // raced back down by the per-frame fallback arming in enableDevMenuOverlay.
+    if (s_hostPresents.load(std::memory_order_relaxed)) {
+      return;
+    }
+
     HWND hostWindow = s_devMenuOverlayHwnd.load(std::memory_order_relaxed);
     if (hostWindow == nullptr) {
       return;

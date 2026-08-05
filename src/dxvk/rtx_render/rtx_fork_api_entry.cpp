@@ -1248,6 +1248,20 @@ namespace fork_hooks {
   // endScene callback fires before the GPU flip.
   // ---------------------------------------------------------------------------
   void presentEndSceneDispatch() {
+    // Reaching here means the host is presenting through Remix, which retires the fork's own developer
+    // menu path for the rest of the process.
+    //
+    // Both are drivers of one ImGui frame and ImGui has a single unlocked global context, so exactly one
+    // may own a frame -- see dispatchDevMenuOverlay. The overlay's arming is sticky and a host that calls
+    // the copy entry points during startup and then presents ends up with both running every frame, on
+    // different threads. Five of twelve collected crash dumps were null dereferences inside ImGui from
+    // exactly that race.
+    //
+    // Announced from this hook rather than from an ImGui call site because the condition is "the host
+    // presents", not "some particular overlay drew". This runs on every present, before the native one,
+    // and is already the fork's own seam into that path.
+    notifyHostPresented();
+
     if (s_inFrame.load()) {
       auto cb = s_endCallback;
       if (cb) {

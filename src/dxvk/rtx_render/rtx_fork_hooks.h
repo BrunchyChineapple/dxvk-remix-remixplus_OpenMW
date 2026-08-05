@@ -455,6 +455,13 @@ namespace dxvk {
       bool                                  waitForConsumer,
       bool                                  signalCopyComplete = true);
 
+    // Records that the host has presented, which permanently disqualifies dispatchDevMenuOverlay.
+    //
+    // The two are drivers of the same ImGui frame and ImGui has one unlocked global context, so exactly
+    // one of them may own a frame. Called from the present path, which is the winner; see
+    // dispatchDevMenuOverlay for the reasoning and for the crash signature this closes.
+    void notifyHostPresented();
+
     // Arms dispatchDevMenuOverlay for a host that consumes Remix's output through the copy entry
     // points rather than by presenting. Idempotent; called from copyRenderingOutputSynced, whose use
     // is itself the signal that such a host is driving the runtime.
