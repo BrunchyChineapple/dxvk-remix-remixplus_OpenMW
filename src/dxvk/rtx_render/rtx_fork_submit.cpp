@@ -20,6 +20,7 @@
 #include "rtx_terrain_baker.h"    // TerrainBaker::enableBaking, for the terrain-as-decals gate
 
 #include "dxvk_device.h"          // DxvkDevice::getCommon()->getResources()
+#include "../../util/util_env.h"  // env::getEnvVar, for the opt-in hash statistics
 
 namespace dxvk {
 namespace fork_hooks {
@@ -54,23 +55,19 @@ namespace fork_hooks {
     static dxvk::mutex s_missMutex;
     static fast_unordered_set s_missedHashes;
     static fast_unordered_set s_hitHashes;
-    static std::atomic<bool> s_hashSetsSaturated { false };
-
-    // Bound on the distinct-hash sets, past which they stop recording.
+    // Distinct-identity tracking is opt-in, via DXVK_RTX_REPLACEMENT_HASH_STATS=1, and off by default.
     //
-    // They were unbounded, which two things turn from a rounding error into a real cost. The host mints a
-    // fresh mesh identity for every live particle system every frame -- the frame counter is mixed into the
-    // hash deliberately, because this runtime has no mesh-update entry point -- so the miss set grows for as
-    // long as the session runs. Measured: 10,090 distinct misses inside 22 seconds, still climbing linearly,
-    // against a matched count that had already plateaued at 20 after four seconds. And recording took a
-    // global mutex on a path that runs once per draw, so every draw in the frame serialised on it purely to
-    // maintain a log line.
+    // It exists only to feed the log line below, and it was costing a global mutex on a path that runs once
+    // per draw -- every draw in the frame serialising to maintain a diagnostic. Capping the sets was not
+    // enough: the cap has to be reached before the lock disappears, and a host that mints a fresh identity
+    // per particle system per frame takes a long time to reach any sane cap. A measured session sat at
+    // 38,983 distinct misses against a 65,536 cap, so it paid the lock for its entire length and never
+    // saturated.
     //
-    // Saturating rather than clearing keeps the number that was worth having. Pack coverage is established
-    // within the first seconds of a session and then stops changing; everything the set accumulates after
-    // that is ephemeral particle identities, so the growth was measuring churn while appearing to measure
-    // coverage. Once saturated the hot path takes no lock at all.
-    constexpr size_t kMaxTrackedHashes = 65536;
+    // With it off, the hot path touches two relaxed atomics and nothing else. The log line still reports
+    // lookups and how many bound, which are the figures worth having continuously; the distinct-identity
+    // breakdown is a coverage question, asked deliberately when someone wants it.
+    static const bool s_trackDistinct = env::getEnvVar("DXVK_RTX_REPLACEMENT_HASH_STATS") == "1";
 
     const uint64_t lookupCount = s_lookups.fetch_add(1, std::memory_order_relaxed) + 1;
     if (pReplacements != nullptr) {
@@ -78,28 +75,23 @@ namespace fork_hooks {
     }
 
     const bool shouldLog = (lookupCount % 200000) == 0;
-    if (shouldLog || !s_hashSetsSaturated.load(std::memory_order_relaxed)) {
+
+    if (s_trackDistinct) {
       std::lock_guard<dxvk::mutex> lock(s_missMutex);
-
-      if (!s_hashSetsSaturated.load(std::memory_order_relaxed)) {
-        if (pReplacements != nullptr) {
-          s_hitHashes.insert(meshHash);
-        } else {
-          s_missedHashes.insert(meshHash);
-        }
-
-        if (s_hitHashes.size() + s_missedHashes.size() >= kMaxTrackedHashes) {
-          s_hashSetsSaturated.store(true, std::memory_order_relaxed);
-          Logger::info(str::format("[RTX-Replacement] distinct-hash tracking saturated at ",
-            kMaxTrackedHashes, " identities; counts below are now floors, not totals"));
-        }
+      if (pReplacements != nullptr) {
+        s_hitHashes.insert(meshHash);
+      } else {
+        s_missedHashes.insert(meshHash);
       }
-
       if (shouldLog) {
         Logger::info(str::format("[RTX-Replacement] mesh lookups ", lookupCount, ": ",
           s_hits.load(std::memory_order_relaxed), " bound a replacement; distinct meshes ",
           s_hitHashes.size(), " matched and ", s_missedHashes.size(), " did not"));
       }
+    } else if (shouldLog) {
+      Logger::info(str::format("[RTX-Replacement] mesh lookups ", lookupCount, ": ",
+        s_hits.load(std::memory_order_relaxed),
+        " bound a replacement (DXVK_RTX_REPLACEMENT_HASH_STATS=1 for the distinct-identity breakdown)"));
     }
 
     return pReplacements;
