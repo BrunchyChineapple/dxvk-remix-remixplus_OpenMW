@@ -957,54 +957,91 @@ namespace dxvk {
       showReflexLatencyStats();
     }
 
-    // Windows' cursor visibility is a counter, not a flag, and the menu drives it far negative to force
-    // its own cursor to be the only one. Nothing used to put it back, so closing the menu left the
-    // counter deep in the negatives and the operating-system cursor hidden for the rest of the session.
-    // A host that shows its cursor with a single ShowCursor(TRUE) -- which is what SDL does, so what
-    // OpenMW does -- cannot climb back out of that, and its mouse pointer simply never returns.
+    // Windows' cursor visibility is a display counter, not a flag. Every ShowCursor(FALSE) decrements it,
+    // every ShowCursor(TRUE) increments it, and the cursor is drawn only while it is >= 0. Anything that
+    // touches it has to hand it back exactly as it was found, or it takes visibility away from the host
+    // for the remaining lifetime of the process.
     //
-    // So count the decrements and undo exactly that many. Not a blanket "force visible" on close: the
-    // game may legitimately want its cursor hidden, and this must restore the state it found rather than
-    // impose one.
-    static int s_cursorHidesApplied = 0;
+    // Two rules keep that true. Only call ShowCursor when the cursor is not already in the wanted state,
+    // so a frame with nothing to do makes no adjustment at all. And keep a running net of what was
+    // issued, so closing the menu can return the counter untouched.
+    static int s_cursorAdjust = 0;
+
+    // Read the current state without disturbing it. This is what lets the calls below be conditional,
+    // and conditional is what stops the counter drifting.
+    const auto cursorIsVisible = []() -> bool {
+      CURSORINFO info {};
+      info.cbSize = sizeof(info);
+      // CURSOR_SHOWING is one bit among several; CURSOR_SUPPRESSED also appears in this field when a
+      // precision input device has taken over. Test the bit rather than comparing the whole field.
+      return GetCursorInfo(&info) && (info.flags & CURSOR_SHOWING) != 0;
+    };
+
+    // Both loops stop on ShowCursor's return value, which is the counter after the call. Each call moves
+    // it by exactly one, so the target is always reached and no iteration cap has to be invented.
+    //
+    // The call sits in the loop body, not the condition. The idiomatic "while (ShowCursor(FALSE) >= 0)"
+    // performs one more decrement than its body observes -- the call that finally drives the counter
+    // negative -- so a tally kept in the body would lose exactly one every time.
+    const auto hideSystemCursor = [&]() {
+      if (!cursorIsVisible()) {
+        return;
+      }
+      for (;;) {
+        const int counter = ShowCursor(FALSE);
+        ++s_cursorAdjust;
+        if (counter < 0) {
+          break;
+        }
+      }
+    };
+
+    const auto showSystemCursor = [&]() {
+      if (cursorIsVisible()) {
+        return;
+      }
+      for (;;) {
+        const int counter = ShowCursor(TRUE);
+        --s_cursorAdjust;
+        if (counter >= 0) {
+          break;
+        }
+      }
+    };
+
+    // Give the counter back. Runs in whichever direction the net adjustment happens to be, because the
+    // menu can have either hidden the cursor for ImGui's own pointer or revealed one the game had hidden.
+    const auto restoreSystemCursor = [&]() {
+      while (s_cursorAdjust > 0) {
+        ShowCursor(TRUE);
+        --s_cursorAdjust;
+      }
+      while (s_cursorAdjust < 0) {
+        ShowCursor(FALSE);
+        ++s_cursorAdjust;
+      }
+    };
 
     if (showUI == UIType::None) {
       ImGui::CloseCurrentPopup();
       ImGui::GetIO().MouseDrawCursor = false;
-      while (s_cursorHidesApplied > 0) {
-        ShowCursor(TRUE);
-        --s_cursorHidesApplied;
-      }
+      restoreSystemCursor();
+    } else if (RtxOptions::showUICursor()) {
+      // ImGui draws the pointer itself, so leaving the system cursor up would put two on screen.
+      ImGui::GetIO().MouseDrawCursor = true;
+      hideSystemCursor();
     } else {
-      if (RtxOptions::showUICursor()) {
-        ImGui::GetIO().MouseDrawCursor = true;
-        // Force display counter into invisible state.
-        //
-        // Counted with the call in the loop body rather than the condition. The idiomatic
-        // "while (ShowCursor(FALSE) >= 0) {}" performs one more decrement than its body sees -- the call
-        // that finally drives the counter negative -- so tallying inside the body loses exactly one every
-        // time, and loses the *only* one when the cursor was already hidden. Each menu opening then
-        // leaked a decrement, the counter drifted further negative, and a host that reveals its cursor
-        // with a single ShowCursor(TRUE) -- which is what SDL does, and OpenMW uses real hardware cursors
-        // through SDL -- could never get it back.
-        for (;;) {
-          const int counter = ShowCursor(FALSE);
-          ++s_cursorHidesApplied;
-          if (counter < 0) {
-            break;
-          }
-        }
-      } else {
-        // Force display counter into visible state, undoing our own tally as we go.
-        for (;;) {
-          if (ShowCursor(TRUE) >= 0) {
-            break;
-          }
-          if (s_cursorHidesApplied > 0) {
-            --s_cursorHidesApplied;
-          }
-        }
-      }
+      // Alt+Delete gives up ImGui's pointer in favour of the system one. The game may well have hidden
+      // that cursor for its own reasons -- OpenMW does, through SDL, whenever the camera owns the mouse,
+      // and the diagnostic confirmed the counter sitting at -1 with nothing of ours applied -- so this
+      // has to actually reveal it rather than just undo this code's own hides. The reveal is recorded as
+      // negative adjustment, which is what lets the close path put it back.
+      //
+      // MouseDrawCursor is cleared here rather than left to showUICursorOnChange. That callback only acts
+      // when the thread it runs on happens to hold an ImGui context, so it cannot be the sole writer, and
+      // a stale true would draw the software pointer on top of the system one just revealed.
+      ImGui::GetIO().MouseDrawCursor = false;
+      showSystemCursor();
     }
 
     showHudMessages(ctx);
@@ -4566,7 +4603,15 @@ namespace dxvk {
     //  inflation.
     freeUnusedMemory();
 
-    ::ShowCursor(m_prevCursorVisible);
+    // Cursor visibility is restored by the display-counter bookkeeping in update(), which is the only
+    // place that knows what was applied. Nothing to do here.
+    //
+    // This used to call ShowCursor(m_prevCursorVisible) against a flag sampled in onOpenMenus. ShowCursor
+    // takes a direction, not a state: passing FALSE decrements the display counter rather than setting
+    // "hidden". OpenMW keeps its cursor hidden during play, so the sample was FALSE and every menu close
+    // decremented the counter one further, permanently. Measured across a single session the counter
+    // walked 0, -1, -2 ... -10, one per Alt+X cycle, after which the game's own single ShowCursor(TRUE)
+    // could no longer reach zero and its pointer was gone for the rest of the run.
     if (RtxOptions::restoreCursorPosition()) {
       ::SetPhysicalCursorPos(m_cachedGameCursorX, m_cachedGameCursorY);
     }
@@ -4577,10 +4622,6 @@ namespace dxvk {
     //  user may want to make some changes to various settings and so they
     //  should have all available memory to do so.
     freeUnusedMemory();
-
-    CURSORINFO info;
-    GetCursorInfo(&info);
-    m_prevCursorVisible = info.flags == CURSOR_SHOWING;
 
     // Use physical cursor position to avoid DPI scaling issues
     POINT pt;

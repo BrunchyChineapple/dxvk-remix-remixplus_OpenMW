@@ -155,7 +155,6 @@ namespace dxvk {
 
     HWND                  m_gameHwnd;
     bool                  m_init = false;
-    bool                  m_prevCursorVisible = false;
 
     int                   m_cachedGameCursorX = 0;
     int                   m_cachedGameCursorY = 0;
