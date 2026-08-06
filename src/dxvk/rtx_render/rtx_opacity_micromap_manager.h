@@ -443,6 +443,18 @@ namespace dxvk {
     // meaning affected BLASes should be rebuilt to bind them.
     bool hasNewlyBuiltOmms() const { return m_hasNewlyBuiltOmms; }
 
+    // Whether one specific OMM transitioned to Built this frame.
+    //
+    // hasNewlyBuiltOmms() answers "did anything change", which is all the accel manager used to ask, and
+    // it answered that by discarding every cached bucket. In a scene where 41% of draws are alpha tested
+    // something is almost always building, so that reduced to rebuilding the whole merged BLAS every
+    // frame. The build loop already knows which OMM it built -- it splices that source hash from the baked
+    // list to the built list -- so the set is free to keep and lets an invalidation reach only the buckets
+    // that actually bind the OMM in question.
+    bool wasOmmNewlyBuilt(XXH64_hash_t ommSourceHash) const {
+      return m_newlyBuiltOmmHashes.find(ommSourceHash) != m_newlyBuiltOmmHashes.end();
+    }
+
     // Returns true if OMM option changes require all BLASes to be rebuilt
     // (e.g. binding or building options toggled).  Cleared after reading.
     bool consumeNeedsBlasRebuild() {
@@ -612,6 +624,11 @@ namespace dxvk {
     // the Built state.  The accel manager uses this to force a scene rebuild so
     // the newly-built OMMs get bound to BLASes.
     bool m_hasNewlyBuiltOmms = false;
+
+    // Which OMMs transitioned to Built this frame, by source hash. Cleared in onFrameStart alongside the
+    // flag above. Kept so an invalidation can be scoped to the buckets binding those OMMs instead of
+    // discarding the whole bucket cache.
+    std::unordered_set<XXH64_hash_t> m_newlyBuiltOmmHashes;
 
     // Set when OMM option changes require all BLASes to be rebuilt.
     bool m_needsBlasRebuild = false;

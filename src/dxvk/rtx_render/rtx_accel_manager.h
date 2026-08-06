@@ -70,6 +70,11 @@ class AccelManager : public CommonDeviceObject {
     // re-sum the vector for every candidate instance.
     uint32_t totalPrimitiveCount = 0;
 
+    // Source hashes of the opacity micromaps bound to this bucket's geometries, recorded as they are
+    // bound. Deduplication is not worth it: a bucket binds a handful of distinct OMMs and the set is only
+    // walked once per frame per cached bucket.
+    std::vector<XXH64_hash_t> ommSourceHashes;
+
     // Tries to add a geometry instance to the bucket. The addition is successful if either:
     //   a) the bucket is empty,
     //   b) the instance has the same mask etc. as all other instances in the bucket, and the
@@ -180,6 +185,17 @@ public:
   void removeInstanceFromBucketCache(RtInstance* instance);
   void invalidateOpacityMicromapBindings() { m_ommBindPending = true; }
 
+  // Acceleration structures newly allocated during the frame in progress, and their total size.
+  //
+  // Read by the frame-interval spike log, which needs to say whether a stalled frame coincided with new
+  // acceleration-structure allocation. createPooledBlas has no suballocator behind it, so every call is a
+  // fresh device allocation.
+  uint32_t getBlasAllocationsThisFrame() const { return m_blasAllocationsThisFrame; }
+  size_t getBlasAllocationBytesThisFrame() const { return m_blasAllocationBytesThisFrame; }
+
+  uint32_t getCachedBucketsThisFrame() const { return m_cachedBucketsThisFrame; }
+  uint32_t getDirtyBucketsThisFrame() const { return m_dirtyBucketsThisFrame; }
+
 private:
   struct SurfaceInfo {
     uint32_t surfaceMaterialIndex;
@@ -273,15 +289,31 @@ private:
     // Which TLAS type(s) this bucket was emitted to
     bool isUnordered = false;
     bool hasSssInstances = false;
+    // Whether any of this bucket's geometries bound an opacity micromap when it was built.
+    bool hasOmmInstances = false;
     // Set when an instance belonging to this bucket is destroyed. The bucket's instances vector then
     // holds at least one dangling pointer, so the dirty scan must treat it as dirty without walking it.
     bool invalidated = false;
+    // Opacity micromaps this bucket binds, by source hash. Compared against the OMMs built each frame so
+    // the bucket is rebuilt only when one of its own OMMs changed.
+    std::vector<XXH64_hash_t> ommSourceHashes;
   };
   std::vector<CachedBucketState> m_cachedBuckets;
 
   // Maps a merged instance pointer to its bucket index in m_cachedBuckets.
   // Allows O(1) "is this instance in a clean bucket?" check in the main loop.
   std::unordered_map<RtInstance*, uint32_t> m_instanceBucketIndex;
+
+  // Counted per frame so the spike log can attribute a stall to acceleration-structure allocation.
+  // Mutable because createPooledBlas is const.
+  mutable uint32_t m_blasAllocationsThisFrame = 0;
+  mutable size_t m_blasAllocationBytesThisFrame = 0;
+
+  // Bucket cache effectiveness for the frame in progress, reported by the spike log. dirty over cached is
+  // the number that says whether the cache is doing anything: it sat at nearly all-dirty while any newly
+  // built opacity micromap invalidated every bucket.
+  uint32_t m_cachedBucketsThisFrame = 0;
+  uint32_t m_dirtyBucketsThisFrame = 0;
 
   // Set of BlasEntry* that went to the dynamic path on the last full rebuild.
   // Used for quick O(1) per-instance classification on the dynamics-only path.

@@ -38,6 +38,7 @@
 #include "rtx_options.h"
 
 #include "rtx/pass/instance_definitions.h"
+#include "../../util/util_env.h"
 #include "rtx/concept/billboard.h"
 
 #include "rtx/pass/common_binding_indices.h"
@@ -427,6 +428,16 @@ namespace dxvk {
   }
 
   Rc<PooledBlas> AccelManager::createPooledBlas(size_t bufferSize, const char* name) const {
+    // Counted because this is a candidate for the frame hitches and nothing reported it.
+    //
+    // There is no suballocator here: every call is a fresh acceleration structure and its device memory.
+    // The merged bucket's required size shifts as paging changes the instance count, the pool only reuses
+    // a structure that is large enough and untouched for two frames, and GC drops the rest -- so walking
+    // through the world can allocate and release hundreds of megabytes of acceleration structure. The
+    // frame-interval log in RtxContext reads these to say whether a spike coincided with an allocation.
+    ++m_blasAllocationsThisFrame;
+    m_blasAllocationBytesThisFrame += bufferSize;
+
     auto newBlas = new PooledBlas();
 
     DxvkBufferCreateInfo bufferCreateInfo {};
@@ -478,6 +489,9 @@ namespace dxvk {
 
     auto& instances = instanceManager.getInstanceTable();
     const uint32_t currentFrame = m_device->getCurrentFrameId();
+
+    m_blasAllocationsThisFrame = 0;
+    m_blasAllocationBytesThisFrame = 0;
 
     // --- Full-skip fast path ---
     // If no scene changes occurred since the last build, we can reuse all cached
@@ -550,18 +564,45 @@ namespace dxvk {
     bool anyBucketDirty = false;
 
     if (hasValidBucketCache) {
-      // When newly built OMMs need binding, force all buckets dirty so that
-      // tryBindOpacityMicromap runs on every instance's BLAS rebuild.
-      if (m_ommBindPending) {
-        bucketDirty.resize(m_cachedBuckets.size(), true);
-        anyBucketDirty = true;
-        m_ommBindPending = false;
-      } else {
+      {
+        // A bucket whose opacity micromaps were rebuilt has to be rebuilt too, so tryBindOpacityMicromap
+        // runs again and its geometries pick up the new OMMs. Which buckets those are is a per-bucket
+        // question, and it used to be answered by dirtying all of them.
+        //
+        // That made the bucket cache useless in practice. 41% of measured draws are alpha tested, so some
+        // OMM is building on nearly every frame, so every bucket was dirty on nearly every frame, so the
+        // merged BLAS -- 2.5-3M primitives -- was rebuilt from scratch on nearly every frame. It showed up
+        // as a 25-44ms baseline that degraded as the scene grew, and as hitches indoors and out with no
+        // relation to replacements, because alpha-tested geometry is everywhere.
+        //
+        // Now each cached bucket is checked against the specific OMMs built this frame. A bucket binding
+        // none of them keeps its BLAS and its place in the cache.
         std::unordered_set<RtInstance*> currentInstanceSet(instances.begin(), instances.end());
         bucketDirty.resize(m_cachedBuckets.size(), false);
 
+        const bool ommsBuilt = opacityMicromapManager != nullptr && m_ommBindPending;
+        m_ommBindPending = false;
+
         for (uint32_t bi = 0; bi < m_cachedBuckets.size(); ++bi) {
           const auto& cachedBucket = m_cachedBuckets[bi];
+
+          if (ommsBuilt) {
+            bool bindsRebuiltOmm = false;
+            for (const XXH64_hash_t ommSourceHash : cachedBucket.ommSourceHashes) {
+              if (opacityMicromapManager->wasOmmNewlyBuilt(ommSourceHash)) {
+                bindsRebuiltOmm = true;
+                break;
+              }
+            }
+            // A bucket that has alpha-tested geometry but no recorded hashes has not bound an OMM yet, so
+            // it still needs the rebuild that binds one.
+            if (bindsRebuiltOmm
+                || (cachedBucket.hasOmmInstances && cachedBucket.ommSourceHashes.empty())) {
+              bucketDirty[bi] = true;
+              anyBucketDirty = true;
+              continue;
+            }
+          }
 
           // Must precede anything that reads cachedBucket.instances. removeInstanceFromBucketCache sets
           // this when an instance of the bucket is destroyed, which leaves a dangling pointer in that
@@ -622,6 +663,14 @@ namespace dxvk {
       // With no cached buckets, every bucket is built from scratch below, so
       // pending OMM binding invalidation is naturally consumed by the full pass.
       m_ommBindPending = false;
+    }
+
+    m_cachedBucketsThisFrame = static_cast<uint32_t>(m_cachedBuckets.size());
+    m_dirtyBucketsThisFrame = 0;
+    for (const bool dirty : bucketDirty) {
+      if (dirty) {
+        ++m_dirtyBucketsThisFrame;
+      }
     }
 
     // Allocate the transform buffer
@@ -1070,6 +1119,71 @@ namespace dxvk {
       totalPrimitiveIDOffset += primitiveCount;
     }
 
+    // Optional: report the heaviest meshes with the world position of every instance.
+    //
+    // Answers a question the per-mesh attribution below cannot. That report says a mesh costs
+    // triangles * instances, but not whether those instances are distinct objects in the world or the
+    // same object drawn more than once. Two placements metres apart are two props and the cost is real;
+    // two at the same coordinates are a duplicated reference paying twice for one visible thing, which is
+    // a content defect rather than a budget.
+    //
+    // Off unless DXVK_RTX_LOG_HEAVY_INSTANCES names a triangle threshold, because it walks every surface
+    // and prints a line per instance.
+    {
+      static const uint32_t s_heavyThreshold = []() -> uint32_t {
+        const std::string value = env::getEnvVar("DXVK_RTX_LOG_HEAVY_INSTANCES");
+        return value.empty() ? 0u : static_cast<uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
+      }();
+
+      static uint32_t s_lastHeavyLogFrame = 0;
+      if (s_heavyThreshold != 0 && currentFrame - s_lastHeavyLogFrame >= 300) {
+        s_lastHeavyLogFrame = currentFrame;
+
+        struct HeavyMesh {
+          uint32_t primitives = 0;
+          std::vector<const RtInstance*> instances;
+        };
+        std::unordered_map<const BlasEntry*, HeavyMesh> byEntry;
+
+        for (const RtInstance* surface : m_reorderedSurfaces) {
+          const BlasEntry* entry = surface->getBlas();
+          if (entry == nullptr) {
+            continue;
+          }
+          auto& heavy = byEntry[entry];
+          if (heavy.primitives == 0) {
+            for (const auto& buildRange : entry->buildRanges) {
+              heavy.primitives += buildRange.primitiveCount;
+            }
+          }
+          // A multi-range mesh contributes one surface entry per range, all for the same instance, so
+          // only record a change of instance.
+          if (heavy.instances.empty() || heavy.instances.back() != surface) {
+            heavy.instances.push_back(surface);
+          }
+        }
+
+        for (const auto& pair : byEntry) {
+          const HeavyMesh& heavy = pair.second;
+          if (heavy.primitives < s_heavyThreshold) {
+            continue;
+          }
+
+          std::string positions;
+          for (const RtInstance* instance : heavy.instances) {
+            // VkTransformMatrixKHR is row-major 3x4; the translation is the last column.
+            const auto& m = instance->getVkInstance().transform.matrix;
+            positions += str::format(" (", m[0][3], ",", m[1][3], ",", m[2][3], ")");
+          }
+
+          Logger::info(str::format("[heavy] ", heavy.primitives, " tris  ",
+            heavy.instances.size(), " instances  geometry=0x", std::hex,
+            pair.first->modifiedGeometryData.hashes[HashComponents::VertexPosition], std::dec,
+            "  world:", positions));
+        }
+      }
+    }
+
     // Validate the scene against the engine-wide index limits, and name what is consuming them.
     //
     // Three things were wrong with only checking PRIMITIVE_INDEX_MAX_VALUE under ONCE().
@@ -1226,6 +1340,9 @@ namespace dxvk {
         cached.indexOffsets = bucket->indexOffsets;
         cached.isUnordered = bucket->usesUnorderedApproximations;
         cached.hasSssInstances = bucket->hasSssInstances;
+        // Carried so the next frame's scan can tell whether this bucket's own OMMs were rebuilt.
+        cached.hasOmmInstances = bucket->hasOmmInstances;
+        cached.ommSourceHashes = bucket->ommSourceHashes;
 
         // Capture the assigned BLAS (stored on bucket by createBlasBuffersAndInstances)
         if (bucket->assignedBlas) {
@@ -1931,6 +2048,9 @@ namespace dxvk {
                                                          blasBucket->geometries[i], instanceManager);
           if (ommSourceHash != kEmptyHash) {
             blasBucket->hasOmmInstances = true;
+            // Kept rather than discarded: this is what lets the next frame's dirty scan ask whether *this*
+            // bucket's OMMs were rebuilt, instead of assuming every bucket's were.
+            blasBucket->ommSourceHashes.push_back(ommSourceHash);
           }
         }
       }

@@ -2320,6 +2320,9 @@ namespace dxvk {
       if (result == OmmResult::Success) {
         ommCacheItem.cacheState = OpacityMicromapCacheState::eStep3_Built;
         m_hasNewlyBuiltOmms = true;
+        // Recorded as well as flagged, so the accel manager can dirty only the buckets that bind this
+        // OMM rather than every bucket it has cached.
+        m_newlyBuiltOmmHashes.insert(ommSrcHash);
         // Move the item from the baked list to the end of the built list
         auto ommSrcHashIterToMove = ommSrcHashIter++;
         m_builtList.splice(m_builtList.end(), m_bakedList, ommSrcHashIterToMove);
@@ -2387,6 +2390,7 @@ namespace dxvk {
     m_numRequestedOMMBindings = 0;
     m_scratchMemoryUsedThisFrame = 0;
     m_hasNewlyBuiltOmms = false;
+    m_newlyBuiltOmmHashes.clear();
 
     // Clear caches if we need to rebuild OMMs
     {
