@@ -1945,22 +1945,23 @@ namespace dxvk {
       // The BLAS references rotate with the structure they belong to, so previousAccelStructure and
       // previousReferencedBlases always describe the same generation.
       std::swap(tlas.referencedBlases, tlas.previousReferencedBlases);
-    }
 
-    // Take ownership of every BLAS this generation can reach, for as long as this generation can be
-    // read. See the Tlas declaration for why this is ownership rather than a frame count.
-    //
-    // A snapshot of the whole pool rather than the exact instance set: a TLAS instance carries only a
-    // device address, so recovering which PooledBlas each one came from would mean threading that
-    // identity through bucket merging and the bucket cache. The pool is tens of entries, the cost is
-    // that many refcount bumps, and being conservative here can only retain a structure slightly
-    // longer than strictly necessary -- which is the safe direction. Dynamic BLASes are included
-    // because merged instances are not the only thing a TLAS points at.
-    tlas.referencedBlases.clear();
-    tlas.referencedBlases.reserve(m_blasPool.size() + m_activeDynamicBlases.size());
-    tlas.referencedBlases.insert(tlas.referencedBlases.end(), m_blasPool.begin(), m_blasPool.end());
-    tlas.referencedBlases.insert(
-        tlas.referencedBlases.end(), m_activeDynamicBlases.begin(), m_activeDynamicBlases.end());
+      // Take ownership of every BLAS this generation can reach, for as long as this generation can be
+      // read. Only the opaque TLAS has a previous generation: it is bound as
+      // BINDING_ACCELERATION_STRUCTURE_PREVIOUS. Unordered and SSS are rebuilt in place and their BLAS
+      // resources are already tracked on the command list, so snapshotting the whole pool for those
+      // TLASes only adds duplicate allocations and atomic Rc churn to every frame.
+      //
+      // A snapshot of the whole pool rather than the exact instance set is conservative but necessary
+      // here: a TLAS instance carries only a device address, and the previous-generation dependency is
+      // otherwise invisible to DxvkLifetimeTracker. Dynamic BLASes are included because merged instances
+      // are not the only thing the opaque TLAS can point at.
+      tlas.referencedBlases.clear();
+      tlas.referencedBlases.reserve(m_blasPool.size() + m_activeDynamicBlases.size());
+      tlas.referencedBlases.insert(tlas.referencedBlases.end(), m_blasPool.begin(), m_blasPool.end());
+      tlas.referencedBlases.insert(
+          tlas.referencedBlases.end(), m_activeDynamicBlases.begin(), m_activeDynamicBlases.end());
+    }
 
     if (tlas.accelStructure == nullptr || sizeInfo.accelerationStructureSize > tlas.accelStructure->info().size) {
       ScopedGpuProfileZone(ctx, "buildTLAS_createAccelStructure");
