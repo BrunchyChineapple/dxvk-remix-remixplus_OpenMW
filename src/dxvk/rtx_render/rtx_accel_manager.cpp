@@ -84,12 +84,28 @@ namespace dxvk {
   }
 
   void AccelManager::removeInstanceFromBucketCache(RtInstance* instance) {
-    if (m_instanceBucketIndex.erase(instance) == 0) {
+    auto bucketIt = m_instanceBucketIndex.find(instance);
+    if (bucketIt == m_instanceBucketIndex.end()) {
       return;
     }
 
-    m_cachedBuckets.clear();
-    m_instanceBucketIndex.clear();
+    // Invalidate the one bucket that held this instance, not the whole cache.
+    //
+    // Discarding every cached bucket because a single instance was destroyed made the cache dead code in
+    // any exterior: object paging destroys instances continuously, so cachedBuckets was measured at 0 on
+    // every single frame, every bucket was rebuilt from scratch, and the merged BLAS -- 3600-9200
+    // geometries, hundreds of megabytes -- was fully rebuilt every frame with MODE_BUILD.
+    //
+    // Scoping it is sound because the bucket is the unit of both invalidation and rebuild. The instances
+    // of a dirty bucket flow back through the normal path and are re-bucketed; the instances of a clean
+    // bucket are skipped and the bucket is restored wholesale. Nothing is shared between buckets that a
+    // removal from one could invalidate in another.
+    const uint32_t bucketIndex = bucketIt->second;
+    m_instanceBucketIndex.erase(bucketIt);
+    if (bucketIndex < m_cachedBuckets.size()) {
+      m_cachedBuckets[bucketIndex].invalidated = true;
+    }
+
     m_lastProcessedGeneration = UINT64_MAX;
   }
 
@@ -181,6 +197,26 @@ namespace dxvk {
       if (hasSssInstances != instance->isSubsurface()) {
         return false;
       }
+
+      // Bound the bucket's aggregate size.
+      //
+      // A merged BLAS is rebuilt as a whole or not at all, so the bucket is also the unit of
+      // invalidation: the per-bucket cache in mergeInstancesIntoBlas can skip a clean bucket's GPU
+      // build entirely, but one changed instance dirties every geometry sharing its bucket. With no
+      // cap, every merge-eligible instance carrying the same instance flags accumulates into a single
+      // bucket -- measured at 3600-5955 geometries and 285-356 MB, rebuilt with MODE_BUILD every
+      // frame in an exterior, while the small BLASes alongside it reach MODE_UPDATE.
+      //
+      // Capping trades a few more BLASes and TLAS instances for a rebuild cost proportional to what
+      // actually changed. Bucket count is already arbitrary -- surfaces and TLAS instances are
+      // emitted per bucket and nothing downstream depends on how many there are -- so splitting is
+      // behaviour-preserving.
+      //
+      // Zero means unlimited, which reproduces the pre-cap behaviour exactly.
+      const uint32_t maxPrimsPerBucket = RtxOptions::maxPrimsPerMergedBLASBucket();
+      if (maxPrimsPerBucket != 0 && totalPrimitiveCount >= maxPrimsPerBucket) {
+        return false;
+      }
     }
 
     BlasEntry* blasEntry = instance->getBlas();
@@ -191,6 +227,7 @@ namespace dxvk {
     for (auto& range : blasEntry->buildRanges) {
       originalInstances.push_back(instance);
       primitiveCounts.push_back(range.primitiveCount);
+      totalPrimitiveCount += range.primitiveCount;
     }
     instanceBillboardIndices.insert(instanceBillboardIndices.end(), instance->billboardIndices.begin(), instance->billboardIndices.end());
     indexOffsets.insert(indexOffsets.end(), instance->indexOffsets.begin(), instance->indexOffsets.end());
@@ -525,6 +562,16 @@ namespace dxvk {
 
         for (uint32_t bi = 0; bi < m_cachedBuckets.size(); ++bi) {
           const auto& cachedBucket = m_cachedBuckets[bi];
+
+          // Must precede anything that reads cachedBucket.instances. removeInstanceFromBucketCache sets
+          // this when an instance of the bucket is destroyed, which leaves a dangling pointer in that
+          // vector; the live-set check below cannot be trusted to catch it because a later allocation can
+          // land on the same address.
+          if (cachedBucket.invalidated) {
+            bucketDirty[bi] = true;
+            anyBucketDirty = true;
+            continue;
+          }
 
           if (cachedBucket.instances.size() != cachedBucket.instanceCacheIdentities.size()) {
             bucketDirty[bi] = true;
@@ -1005,6 +1052,7 @@ namespace dxvk {
     m_reorderedSurfacesPrimitiveIDPrefixSumLastFrame = m_reorderedSurfacesPrimitiveIDPrefixSum;
     m_reorderedSurfacesPrimitiveIDPrefixSum.resize(m_reorderedSurfaces.size() + 1);
     m_reorderedSurfacesPrimitiveIDPrefixSum[0] = 0;
+
     for (uint32_t i = 0; i < m_reorderedSurfaces.size(); i++) {
       auto surface = m_reorderedSurfaces[i];
       int primitiveCount = 0;
@@ -1022,12 +1070,105 @@ namespace dxvk {
       totalPrimitiveIDOffset += primitiveCount;
     }
 
-    // Validate total primitive count against the engine-wide PRIMITIVE_INDEX_BIT_COUNT limit.
-    if (totalPrimitiveIDOffset > PRIMITIVE_INDEX_MAX_VALUE) {
-      ONCE(Logger::err(str::format("DxvkRaytrace: total primitive count (", totalPrimitiveIDOffset,
-        ") exceeds the maximum primitive index (", PRIMITIVE_INDEX_MAX_VALUE,
-        ") representable in ", PRIMITIVE_INDEX_BIT_COUNT, " bits. "
-        "Downstream systems (NEE cache, prefix-sum lookups) may produce incorrect results.")));
+    // Validate the scene against the engine-wide index limits, and name what is consuming them.
+    //
+    // Three things were wrong with only checking PRIMITIVE_INDEX_MAX_VALUE under ONCE().
+    //
+    // It is the wrong limit to check first. The NEE cache packs its prefix-sum ID into 24 bits beside a
+    // range field, reserving all-ones for "invalid", so NEE_PREFIX_SUM_ID_MAX_VALUE binds well before the
+    // 26-bit one. A scene can be comfortably inside the reported limit and still be corrupting every
+    // cached light sample.
+    //
+    // ONCE() reports a condition that comes and goes as though it happened once at startup. This is
+    // entered and left as the camera moves, and the interesting event is it getting *worse*. Reporting on
+    // a rising high-water mark gives one line per new peak and one when it clears, which is self-limiting
+    // without an invented interval.
+    //
+    // A bare total is not actionable. Each instance needs its own primitive ID range -- a hit has to
+    // identify a triangle of a specific instance for NEE and RTXDI to shade it -- so a mesh costs
+    // triangles * instances of index space, and a single heavy asset instanced a few dozen times can
+    // exhaust the budget on its own. Measured once at 141,818,458 total, of which three submeshes of one
+    // tree asset at ~20 instances each were 85%. Without attribution that number says only "too much".
+    //
+    // This reports; it does not contain. Clamping an unrepresentable ID to the reserved invalid value
+    // looks like the obvious containment, but convertPrefixSumIDToID rejects only -1, so an ID of
+    // NEE_PREFIX_SUM_ID_INVALID is still binary-searched into a real surface. Making that safe means
+    // making invalid-ID handling consistent across the NEE shaders first, which is a change worth doing
+    // deliberately rather than folding into a diagnostic.
+    {
+      static uint64_t s_reportedPeak = 0;
+      const bool overNeeLimit = totalPrimitiveIDOffset > NEE_PREFIX_SUM_ID_MAX_VALUE;
+
+      if (overNeeLimit && totalPrimitiveIDOffset > s_reportedPeak) {
+        s_reportedPeak = totalPrimitiveIDOffset;
+
+        Logger::err(str::format("DxvkRaytrace: scene primitive ID total ", totalPrimitiveIDOffset,
+          " exceeds the NEE cache prefix-sum ID limit ", NEE_PREFIX_SUM_ID_MAX_VALUE,
+          " (", NEE_PREFIX_SUM_ID_BIT_COUNT, " bits)",
+          totalPrimitiveIDOffset > PRIMITIVE_INDEX_MAX_VALUE
+            ? str::format(" and the primitive index limit ", PRIMITIVE_INDEX_MAX_VALUE,
+                          " (", PRIMITIVE_INDEX_BIT_COUNT, " bits)")
+            : std::string(),
+          ". Cached light samples will resolve to the wrong surface and triangle. ",
+          m_reorderedSurfaces.size(), " surfaces. Worst contributors follow."));
+
+        // Aggregate by BlasEntry so the report is per asset rather than per instance. Only runs on a new
+        // peak, so the allocation and sort stay off the normal path entirely.
+        struct Contributor {
+          uint64_t primitiveIDs;
+          uint32_t primitives;
+          uint32_t instances;
+          XXH64_hash_t positionHash;
+          XXH64_hash_t materialHash;
+        };
+        std::unordered_map<const BlasEntry*, Contributor> byEntry;
+        byEntry.reserve(m_reorderedSurfaces.size());
+
+        for (const RtInstance* surface : m_reorderedSurfaces) {
+          const BlasEntry* entry = surface->getBlas();
+          if (entry == nullptr) {
+            continue;
+          }
+          auto& aggregate = byEntry[entry];
+          if (aggregate.instances == 0) {
+            uint32_t primitives = 0;
+            for (const auto& buildRange : entry->buildRanges) {
+              primitives += buildRange.primitiveCount;
+            }
+            aggregate.primitives = primitives;
+            aggregate.positionHash = entry->modifiedGeometryData.hashes[HashComponents::VertexPosition];
+            aggregate.materialHash = entry->input.getMaterialData().getHash();
+          }
+          ++aggregate.instances;
+        }
+
+        std::vector<Contributor> ranked;
+        ranked.reserve(byEntry.size());
+        for (auto& entry : byEntry) {
+          entry.second.primitiveIDs =
+            static_cast<uint64_t>(entry.second.primitives) * entry.second.instances;
+          ranked.push_back(entry.second);
+        }
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const Contributor& a, const Contributor& b) { return a.primitiveIDs > b.primitiveIDs; });
+
+        const size_t reportCount = std::min<size_t>(ranked.size(), 8);
+        for (size_t rank = 0; rank < reportCount; ++rank) {
+          const Contributor& contributor = ranked[rank];
+          Logger::err(str::format("DxvkRaytrace:   #", rank,
+            " ", contributor.primitives, " triangles x ", contributor.instances, " instances = ",
+            contributor.primitiveIDs, " primitive IDs",
+            " (", (contributor.primitiveIDs * 100) / std::max<uint64_t>(totalPrimitiveIDOffset, 1), "%)",
+            " geometry=0x", std::hex, contributor.positionHash,
+            " material=0x", contributor.materialHash, std::dec));
+        }
+        Logger::err(str::format("DxvkRaytrace:   ", byEntry.size(), " unique meshes. "
+          "Reduce the triangle count of the assets above, or their placement count."));
+      } else if (!overNeeLimit && s_reportedPeak != 0) {
+        Logger::info(str::format("DxvkRaytrace: scene primitive ID total back within limits (",
+          totalPrimitiveIDOffset, " <= ", NEE_PREFIX_SUM_ID_MAX_VALUE, ")"));
+        s_reportedPeak = 0;
+      }
     }
 
     buildBlases(ctx, execBarriers, cameraManager, opacityMicromapManager, instanceManager, 

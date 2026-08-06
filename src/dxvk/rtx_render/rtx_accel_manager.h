@@ -65,10 +65,15 @@ class AccelManager : public CommonDeviceObject {
     // The PooledBlas assigned to this bucket by createBlasBuffersAndInstances.
     // Stored here so the per-bucket cache can capture it after buildBlases.
     PooledBlas* assignedBlas = nullptr;
-    
+
+    // Running total of primitiveCounts, so the size cap in tryAddInstance does not have to
+    // re-sum the vector for every candidate instance.
+    uint32_t totalPrimitiveCount = 0;
+
     // Tries to add a geometry instance to the bucket. The addition is successful if either:
     //   a) the bucket is empty,
-    //   b) the instance has the same mask etc. as all other instances in the bucket.
+    //   b) the instance has the same mask etc. as all other instances in the bucket, and the
+    //      bucket is still under rtx.maxPrimsPerMergedBLASBucket.
     bool tryAddInstance(RtInstance* instance);
   };
 
@@ -268,6 +273,9 @@ private:
     // Which TLAS type(s) this bucket was emitted to
     bool isUnordered = false;
     bool hasSssInstances = false;
+    // Set when an instance belonging to this bucket is destroyed. The bucket's instances vector then
+    // holds at least one dangling pointer, so the dirty scan must treat it as dirty without walking it.
+    bool invalidated = false;
   };
   std::vector<CachedBucketState> m_cachedBuckets;
 

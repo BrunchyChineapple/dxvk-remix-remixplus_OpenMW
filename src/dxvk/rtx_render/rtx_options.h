@@ -502,6 +502,17 @@ namespace dxvk {
                "hitching. Raise it if replacements appear too slowly, lower it if entering a cell hitches.\n"
                "0 removes the limit and restores the previous behaviour.");
     RTX_OPTION("rtx", uint32_t, maxPrimsInMergedBLAS, 50000, "The maximum number of triangles for a mesh that can be in the merged BLAS.  ");
+    RTX_OPTION_ENV("rtx", uint32_t, maxPrimsPerMergedBLASBucket, 0, "RTX_MAX_PRIMS_PER_MERGED_BLAS_BUCKET",
+               "Caps the total triangles accumulated into a single merged BLAS bucket. Unlike\n"
+               "maxPrimsInMergedBLAS, which decides whether an individual mesh is eligible to be merged\n"
+               "at all, this bounds the aggregate.\n"
+               "\n"
+               "A merged BLAS is rebuilt whole or not at all, so the bucket is the unit of invalidation:\n"
+               "one changed instance forces a full rebuild of every geometry sharing its bucket. Without\n"
+               "a cap all merge-eligible instances with matching instance flags collect into one bucket,\n"
+               "so an exterior rebuilds hundreds of megabytes every frame. Capping makes the rebuild cost\n"
+               "track what actually changed, at the price of a few more BLASes and TLAS instances.\n"
+               "0 means unlimited, reproducing the uncapped behaviour.");
     RTX_OPTION_FLAG("rtx", bool, forceMergeAllMeshes, false, RtxOptionFlags::NoSave, "Force merges all meshes into as few BLAS as possible.  This is generally not desirable for performance, but can be a useful debugging tool.");
     RTX_OPTION_FLAG("rtx", bool, minimizeBlasMerging, false, RtxOptionFlags::NoSave, "Minimize BLAS merging to the minimum possible, this option tries to give all meshes their own BLAS.  This is generally not desirable forperformance, but can be a useful debugging tool.");
 

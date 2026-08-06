@@ -143,6 +143,19 @@
 #define SURFACE_INDEX_MAX_VALUE       ((1 << SURFACE_INDEX_BIT_COUNT) - 1)
 #define PRIMITIVE_INDEX_BIT_COUNT     26
 #define PRIMITIVE_INDEX_MAX_VALUE     ((1 << PRIMITIVE_INDEX_BIT_COUNT) - 1)
+// NEE cache prefix-sum ID: 24 bits, all-ones reserved to mean "invalid".
+//
+// Tighter than PRIMITIVE_INDEX and therefore the limit that actually binds first. The NEE cache packs
+// (range << 24) | prefixSumID into a single 32-bit word, so an ID too wide for 24 bits is truncated on
+// unpack *and* carries into the range field beside it. Both halves of the cached sample then describe a
+// different triangle than the one it was recorded for.
+//
+// Lives here, next to the other engine-wide index limits, so the C++ that validates a scene against it
+// and the shader that packs it cannot drift apart. NEE_CACHE_INVALID_ID in nee_cache_light.slangh is
+// derived from this.
+#define NEE_PREFIX_SUM_ID_BIT_COUNT   24
+#define NEE_PREFIX_SUM_ID_INVALID     ((1 << NEE_PREFIX_SUM_ID_BIT_COUNT) - 1)
+#define NEE_PREFIX_SUM_ID_MAX_VALUE   (NEE_PREFIX_SUM_ID_INVALID - 1)
 
 // Custom Index encoding (24-bit VkAccelerationStructureInstanceKHR.instanceCustomIndex)
 //   Bits  0..20 : surface index  (CUSTOM_INDEX_SURFACE_MASK)

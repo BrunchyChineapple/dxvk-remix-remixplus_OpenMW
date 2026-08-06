@@ -23,7 +23,11 @@
 
 #include "rtx/concept/light/light_helper.slangh"
 #include "rtx/concept/light/light.slangh"
-#define NEE_CACHE_INVALID_ID 0xffffff
+#include "rtx/pass/instance_definitions.h"
+
+// Derived from the shared engine-wide index limits rather than restated, so the width the cache packs
+// into and the width the scene is validated against are the same number by construction.
+#define NEE_CACHE_INVALID_ID NEE_PREFIX_SUM_ID_INVALID
 
 struct NEECacheUtils
 {

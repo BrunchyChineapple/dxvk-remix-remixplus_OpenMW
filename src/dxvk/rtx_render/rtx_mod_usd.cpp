@@ -1596,6 +1596,25 @@ bool UsdMod::Impl::processMesh(const pxr::UsdPrim& prim, Args& args) {
       MeshReplacement& newReplacement = m_owner.m_replacements->storeObject(usdOriginHash, MeshReplacement(replacement));
       RasterGeometry& newGeomData = newReplacement.data;
 
+      // Name replacement meshes heavy enough to matter, once each, as they load.
+      //
+      // A measured exterior submitted 141,818,458 primitive IDs against a 26-bit ceiling of 67,108,863,
+      // with three replacement submeshes of 2.28M, 2.10M and 1.09M triangles at ~20 instances apiece
+      // accounting for 85% of it. Every instance needs its own primitive ID range, so a mesh costs
+      // triangles * instances of index space and a single heavy asset can exhaust it on its own. Nothing
+      // reported which asset that was, which is the one fact needed to act on it.
+      //
+      // Filtered on maxPrimsInMergedBLAS rather than an invented threshold: that is already the project's
+      // statement of how many triangles are too many to rebuild per frame, so it is the right bar for
+      // "heavy" here too, and it keeps the log to the assets worth looking at.
+      {
+        const uint32_t triangleCount = submesh.GetNumIndices() / 3;
+        if (triangleCount > RtxOptions::maxPrimsInMergedBLAS()) {
+          Logger::info(str::format("[RTX-Replacement] heavy mesh: ", triangleCount,
+            " triangles  ", submesh.prim.GetPath().GetString()));
+        }
+      }
+
       const size_t indexDataSize = submesh.GetNumIndices() * sizeof(uint32_t);
       info.size = dxvk::align(indexDataSize, CACHE_LINE_SIZE);
 
