@@ -542,6 +542,68 @@ namespace dxvk {
 
     m_device->setPresentThrottleDelay(computedPresentThrottleDelay);
 
+    // Report frames that took materially longer than their neighbours, with the state that could explain
+    // it.
+    //
+    // Reported hitches occur in interiors and in exteriors, in areas with and without replacements, which
+    // rules out asset weight, terrain compositing and object paging -- each of those is absent from at
+    // least one place it happens. Rather than test another theory a run at a time, catch the slow frames
+    // themselves and print what was different about them.
+    //
+    // The candidates this distinguishes:
+    //  - async shader compilation, which throttles every frame by
+    //    rtx.shader.asyncCompilationThrottleMilliseconds (33 by default) for as long as any compile is
+    //    outstanding, and falls back to the rasteriser meanwhile. That matches "the raster image shows".
+    //  - acceleration-structure allocation, which has no suballocator behind it and can run to hundreds of
+    //    megabytes as the merged bucket's size shifts.
+    //  - neither, in which case the cost is outside Remix and the number still bounds how much.
+    //
+    // Threshold is relative, because absolute frame time varies with scene and upscaler. A spike is a
+    // frame several times its own recent median, which is what a hitch is; a uniformly low framerate is a
+    // different problem and deliberately not reported here.
+    {
+      static auto s_previousFrameStart = std::chrono::steady_clock::now();
+      static std::array<double, 64> s_recentMs {};
+      static size_t s_recentCount = 0;
+      static size_t s_recentCursor = 0;
+      static uint32_t s_lastReportedFrame = 0;
+
+      const auto frameStart = std::chrono::steady_clock::now();
+      const double elapsedMs
+        = std::chrono::duration<double, std::milli>(frameStart - s_previousFrameStart).count();
+      s_previousFrameStart = frameStart;
+
+      if (s_recentCount >= s_recentMs.size()) {
+        std::array<double, 64> sorted = s_recentMs;
+        std::sort(sorted.begin(), sorted.end());
+        const double medianMs = sorted[sorted.size() / 2];
+
+        const uint32_t frameId = m_device->getCurrentFrameId();
+        // Rate limited so a sustained stall reports its onset rather than every frame of it.
+        const bool quiet = (frameId - s_lastReportedFrame) >= 30;
+
+        if (quiet && medianMs > 0.0 && elapsedMs > medianMs * 3.0 && elapsedMs > medianMs + 20.0) {
+          s_lastReportedFrame = frameId;
+
+          const auto& accelManager = getSceneManager().getAccelManager();
+          Logger::warn(str::format("[spike] frame=", frameId,
+            " took=", static_cast<uint32_t>(elapsedMs), "ms median=",
+            static_cast<uint32_t>(medianMs), "ms",
+            "  shaderCompilesOutstanding=", common->pipelineManager().remixShaderCompilationCount(),
+            " throttleApplied=", computedPresentThrottleDelay, "ms",
+            "  newAccelStructures=", accelManager.getBlasAllocationsThisFrame(),
+            " newAccelBytes=", accelManager.getBlasAllocationBytesThisFrame(),
+            "  buckets=", accelManager.getCachedBucketsThisFrame(),
+            " dirty=", accelManager.getDirtyBucketsThisFrame(),
+            "  cameraValid=", isCameraValid ? 1 : 0));
+        }
+      }
+
+      s_recentMs[s_recentCursor] = elapsedMs;
+      s_recentCursor = (s_recentCursor + 1) % s_recentMs.size();
+      ++s_recentCount;
+    }
+
     // Early out if ray tracing is not supported or if Remix has already been injected
 
     if (!m_rayTracingSupported) {
