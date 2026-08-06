@@ -443,7 +443,11 @@ namespace fork_hooks {
   }
 
   void notifyHostPresented() {
-    s_hostPresents.store(true, std::memory_order_relaxed);
+    // Monotonic process-lifetime latch. Avoid writing the render thread's cache
+    // line on every present once the copy-path driver has already stood down.
+    if (!s_hostPresents.load(std::memory_order_relaxed)) {
+      s_hostPresents.store(true, std::memory_order_relaxed);
+    }
   }
 
   void dispatchDevMenuOverlay(RtxContext& ctx, Resources::RaytracingOutput& rtOutput) {
