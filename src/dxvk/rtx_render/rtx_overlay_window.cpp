@@ -1,12 +1,13 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <algorithm>
+#include <cfloat>
 #include "rtx_fork_hooks.h"
 #include "rtx_overlay_window.h"
 #include "../imgui/dxvk_imgui.h"
 #include "imgui/imgui_impl_win32.h"
 
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+extern ImGuiKey ImGui_ImplWin32_VirtualKeyToImGuiKey(WPARAM wParam);
 
 namespace dxvk {
 // Custom window events used to perform actions in the overlay message pump thread.
@@ -93,6 +94,209 @@ GameOverlay::~GameOverlay() {
   }
 }
 
+void GameOverlay::queueInputEvent(HWND, UINT msg, WPARAM wParam, LPARAM lParam) {
+  InputEvent event {};
+
+  switch (msg) {
+  case WM_MOUSEMOVE:
+    event.type = InputEventType::MousePosition;
+    event.x = static_cast<float>(static_cast<short>(LOWORD(lParam)));
+    event.y = static_cast<float>(static_cast<short>(HIWORD(lParam)));
+    break;
+
+  case WM_MOUSELEAVE:
+    event.type = InputEventType::MousePosition;
+    event.x = -FLT_MAX;
+    event.y = -FLT_MAX;
+    break;
+
+  case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK:
+  case WM_RBUTTONDOWN: case WM_RBUTTONDBLCLK:
+  case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK:
+  case WM_XBUTTONDOWN: case WM_XBUTTONDBLCLK:
+  case WM_LBUTTONUP:
+  case WM_RBUTTONUP:
+  case WM_MBUTTONUP:
+  case WM_XBUTTONUP:
+    event.type = InputEventType::MouseButton;
+    event.down = msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK
+              || msg == WM_RBUTTONDOWN || msg == WM_RBUTTONDBLCLK
+              || msg == WM_MBUTTONDOWN || msg == WM_MBUTTONDBLCLK
+              || msg == WM_XBUTTONDOWN || msg == WM_XBUTTONDBLCLK;
+    if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK || msg == WM_LBUTTONUP) {
+      event.code = 0;
+    } else if (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONDBLCLK || msg == WM_RBUTTONUP) {
+      event.code = 1;
+    } else if (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONDBLCLK || msg == WM_MBUTTONUP) {
+      event.code = 2;
+    } else {
+      event.code = GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? 3 : 4;
+    }
+    break;
+
+  case WM_MOUSEWHEEL:
+    event.type = InputEventType::MouseWheel;
+    event.y = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+    break;
+
+  case WM_MOUSEHWHEEL:
+    event.type = InputEventType::MouseWheel;
+    event.x = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+    break;
+
+  case WM_KEYDOWN:
+  case WM_KEYUP:
+  case WM_SYSKEYDOWN:
+  case WM_SYSKEYUP:
+  {
+    constexpr int kKeypadEnter = VK_RETURN + 256;
+    constexpr uint8_t kLeftCtrl   = 1u << 0;
+    constexpr uint8_t kRightCtrl  = 1u << 1;
+    constexpr uint8_t kLeftShift  = 1u << 2;
+    constexpr uint8_t kRightShift = 1u << 3;
+    constexpr uint8_t kLeftAlt    = 1u << 4;
+    constexpr uint8_t kRightAlt   = 1u << 5;
+    constexpr uint8_t kLeftSuper  = 1u << 6;
+    constexpr uint8_t kRightSuper = 1u << 7;
+
+    event.type = InputEventType::Key;
+    event.down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+    event.nativeScancode = static_cast<int>(LOBYTE(HIWORD(lParam)));
+
+    int vk = static_cast<int>(wParam);
+    const bool extended = (HIWORD(lParam) & KF_EXTENDED) != 0;
+    if (vk == VK_RETURN && extended) {
+      vk = kKeypadEnter;
+    } else if (vk == VK_SHIFT) {
+      const UINT mapped = MapVirtualKeyW(static_cast<UINT>(event.nativeScancode), MAPVK_VSC_TO_VK_EX);
+      vk = mapped == VK_RSHIFT ? VK_RSHIFT : VK_LSHIFT;
+    } else if (vk == VK_CONTROL) {
+      vk = extended ? VK_RCONTROL : VK_LCONTROL;
+    } else if (vk == VK_MENU) {
+      vk = extended ? VK_RMENU : VK_LMENU;
+    }
+
+    event.nativeKeycode = vk;
+    event.code = static_cast<int>(ImGui_ImplWin32_VirtualKeyToImGuiKey(vk));
+
+    std::lock_guard lock(m_inputEventMutex);
+    if (!m_pressedModifiersInitialized) {
+      auto isDown = [](int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; };
+      if (isDown(VK_LCONTROL)) m_pressedModifiers |= kLeftCtrl;
+      if (isDown(VK_RCONTROL)) m_pressedModifiers |= kRightCtrl;
+      if (isDown(VK_LSHIFT))   m_pressedModifiers |= kLeftShift;
+      if (isDown(VK_RSHIFT))   m_pressedModifiers |= kRightShift;
+      if (isDown(VK_LMENU))    m_pressedModifiers |= kLeftAlt;
+      if (isDown(VK_RMENU))    m_pressedModifiers |= kRightAlt;
+      if (isDown(VK_LWIN))     m_pressedModifiers |= kLeftSuper;
+      if (isDown(VK_RWIN))     m_pressedModifiers |= kRightSuper;
+      m_pressedModifiersInitialized = true;
+    }
+
+    uint8_t changedModifier = 0;
+    switch (vk) {
+    case VK_LCONTROL: changedModifier = kLeftCtrl; break;
+    case VK_RCONTROL: changedModifier = kRightCtrl; break;
+    case VK_LSHIFT:   changedModifier = kLeftShift; break;
+    case VK_RSHIFT:   changedModifier = kRightShift; break;
+    case VK_LMENU:    changedModifier = kLeftAlt; break;
+    case VK_RMENU:    changedModifier = kRightAlt; break;
+    case VK_LWIN:     changedModifier = kLeftSuper; break;
+    case VK_RWIN:     changedModifier = kRightSuper; break;
+    }
+    if (changedModifier != 0) {
+      if (event.down) {
+        m_pressedModifiers |= changedModifier;
+      } else {
+        m_pressedModifiers &= ~changedModifier;
+      }
+    }
+
+    if (m_pressedModifiers & (kLeftCtrl | kRightCtrl))   event.modifiers |= 1u << 0;
+    if (m_pressedModifiers & (kLeftShift | kRightShift)) event.modifiers |= 1u << 1;
+    if (m_pressedModifiers & (kLeftAlt | kRightAlt))     event.modifiers |= 1u << 2;
+    if (m_pressedModifiers & (kLeftSuper | kRightSuper)) event.modifiers |= 1u << 3;
+    m_inputEvents.push_back(event);
+    return;
+  }
+
+  case WM_CHAR:
+    if (wParam == 0 || wParam >= 0x10000) {
+      return;
+    }
+    event.type = InputEventType::Character;
+    event.code = static_cast<int>(wParam);
+    break;
+
+  case WM_SETFOCUS:
+  case WM_KILLFOCUS:
+    event.type = InputEventType::Focus;
+    event.down = msg == WM_SETFOCUS;
+    break;
+
+  default:
+    return;
+  }
+
+  std::lock_guard lock(m_inputEventMutex);
+  if (event.type == InputEventType::Focus && !event.down) {
+    m_pressedModifiers = 0;
+    m_pressedModifiersInitialized = false;
+  }
+
+  // Motion can arrive much faster than a frame is presented. Only the latest
+  // consecutive position matters, and coalescing prevents an extended render
+  // stall from growing this queue without bound on mouse movement alone.
+  if (event.type == InputEventType::MousePosition && !m_inputEvents.empty()
+      && m_inputEvents.back().type == InputEventType::MousePosition) {
+    m_inputEvents.back() = event;
+    return;
+  }
+
+  m_inputEvents.push_back(event);
+}
+
+void GameOverlay::processInputEvents() {
+  std::vector<InputEvent> events;
+  {
+    std::lock_guard lock(m_inputEventMutex);
+    events.swap(m_inputEvents);
+  }
+
+  ImGuiIO& io = ImGui::GetIO();
+  for (const InputEvent& event : events) {
+    switch (event.type) {
+    case InputEventType::MousePosition:
+      ImGui_ImplWin32_SetMouseTracked(event.x != -FLT_MAX && event.y != -FLT_MAX);
+      io.AddMousePosEvent(event.x, event.y);
+      break;
+    case InputEventType::MouseButton:
+      io.AddMouseButtonEvent(event.code, event.down);
+      break;
+    case InputEventType::MouseWheel:
+      io.AddMouseWheelEvent(event.x, event.y);
+      break;
+    case InputEventType::Key:
+      io.AddKeyEvent(ImGuiKey_ModCtrl,  (event.modifiers & (1u << 0)) != 0);
+      io.AddKeyEvent(ImGuiKey_ModShift, (event.modifiers & (1u << 1)) != 0);
+      io.AddKeyEvent(ImGuiKey_ModAlt,   (event.modifiers & (1u << 2)) != 0);
+      io.AddKeyEvent(ImGuiKey_ModSuper, (event.modifiers & (1u << 3)) != 0);
+      if (event.code != static_cast<int>(ImGuiKey_None)) {
+        const ImGuiKey key = static_cast<ImGuiKey>(event.code);
+        io.AddKeyEvent(key, event.down);
+        io.SetKeyEventNativeData(key, event.nativeKeycode, event.nativeScancode);
+      }
+      break;
+    case InputEventType::Character:
+      io.AddInputCharacterUTF16(static_cast<ImWchar16>(event.code));
+      break;
+    case InputEventType::Focus:
+      io.AddFocusEvent(event.down);
+      break;
+    }
+  }
+}
+
 void GameOverlay::show() {
   if (!m_hwnd || !m_gameHwnd) {
     return;
@@ -145,7 +349,7 @@ void GameOverlay::hide() {
 
   if (m_mouseInsideOverlay) {
     m_mouseInsideOverlay = false;
-    ImGui_ImplWin32_WndProcHandler(m_hwnd, WM_MOUSELEAVE, 0, 0);
+    queueInputEvent(m_hwnd, WM_MOUSELEAVE, 0, 0);
   }
 
   SetWindowPos(m_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
@@ -308,8 +512,7 @@ LRESULT GameOverlay::overlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
   case WM_REMIX_HIDE_OVERLAY: hide(); return 0;
   case WM_REMIX_UPDATE_INPUT_FOCUS:
     // The non-activating overlay does not receive focus messages itself.
-    ImGui_ImplWin32_WndProcHandler(
-      hWnd, wParam ? WM_SETFOCUS : WM_KILLFOCUS, 0, 0);
+    queueInputEvent(hWnd, wParam ? WM_SETFOCUS : WM_KILLFOCUS, 0, 0);
     return 0;
   case WM_DESTROY: PostQuitMessage(0); return 0;
 
@@ -344,7 +547,7 @@ LRESULT GameOverlay::overlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
     if (!isOurForeground()) {
       if (m_mouseInsideOverlay) {
         m_mouseInsideOverlay = false;
-        ImGui_ImplWin32_WndProcHandler(m_hwnd, WM_MOUSELEAVE, 0, 0);
+        queueInputEvent(m_hwnd, WM_MOUSELEAVE, 0, 0);
       }
       return 0;
     }
@@ -352,10 +555,12 @@ LRESULT GameOverlay::overlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
     // Stable scale 
     float sx = 1.0f, sy = 1.0f;
     if (m_w > 0 && m_h > 0) {
-      const ImVec2 disp = ImGui::GetIO().DisplaySize;
-      if (disp.x > 0.0f && disp.y > 0.0f) {
-        sx = disp.x / (float) m_w;
-        sy = disp.y / (float) m_h;
+      const uint64_t extent = m_inputDisplayExtent.load(std::memory_order_relaxed);
+      const uint32_t displayWidth = static_cast<uint32_t>(extent >> 32);
+      const uint32_t displayHeight = static_cast<uint32_t>(extent);
+      if (displayWidth > 0 && displayHeight > 0) {
+        sx = static_cast<float>(displayWidth) / static_cast<float>(m_w);
+        sy = static_cast<float>(displayHeight) / static_cast<float>(m_h);
       }
     }
 
@@ -404,12 +609,12 @@ LRESULT GameOverlay::overlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         if (GetKeyState(VK_SHIFT) & 0x8000) wp |= MK_SHIFT;
 
         LPARAM lp = MAKELPARAM((WORD) (SHORT) x, (WORD) (SHORT) y);
-        ImGui_ImplWin32_WndProcHandler(m_hwnd, WM_MOUSEMOVE, wp, lp);
+        queueInputEvent(m_hwnd, WM_MOUSEMOVE, wp, lp);
 
         if (m.usButtonFlags) {
           auto send_btn = [&](UINT msg, WPARAM w) {
             LPARAM lp = MAKELPARAM((WORD) (SHORT) x, (WORD) (SHORT) y);
-            ImGui_ImplWin32_WndProcHandler(m_hwnd, msg, w, lp);
+            queueInputEvent(m_hwnd, msg, w, lp);
           };
           if (m.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN)  send_btn(WM_LBUTTONDOWN, wp | MK_LBUTTON);
           if (m.usButtonFlags & RI_MOUSE_LEFT_BUTTON_UP)    send_btn(WM_LBUTTONUP, wp & ~MK_LBUTTON);
@@ -417,42 +622,92 @@ LRESULT GameOverlay::overlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
           if (m.usButtonFlags & RI_MOUSE_RIGHT_BUTTON_UP)   send_btn(WM_RBUTTONUP, wp & ~MK_RBUTTON);
           if (m.usButtonFlags & RI_MOUSE_MIDDLE_BUTTON_DOWN)send_btn(WM_MBUTTONDOWN, wp | MK_MBUTTON);
           if (m.usButtonFlags & RI_MOUSE_MIDDLE_BUTTON_UP)  send_btn(WM_MBUTTONUP, wp & ~MK_MBUTTON);
-          if (m.usButtonFlags & RI_MOUSE_BUTTON_4_DOWN)     send_btn(WM_XBUTTONDOWN, wp | MK_XBUTTON1);
-          if (m.usButtonFlags & RI_MOUSE_BUTTON_4_UP)       send_btn(WM_XBUTTONUP, wp & ~MK_XBUTTON1);
-          if (m.usButtonFlags & RI_MOUSE_BUTTON_5_DOWN)     send_btn(WM_XBUTTONDOWN, wp | MK_XBUTTON2);
-          if (m.usButtonFlags & RI_MOUSE_BUTTON_5_UP)       send_btn(WM_XBUTTONUP, wp & ~MK_XBUTTON2);
+          if (m.usButtonFlags & RI_MOUSE_BUTTON_4_DOWN)     send_btn(WM_XBUTTONDOWN, MAKEWPARAM(wp | MK_XBUTTON1, XBUTTON1));
+          if (m.usButtonFlags & RI_MOUSE_BUTTON_4_UP)       send_btn(WM_XBUTTONUP, MAKEWPARAM(wp & ~MK_XBUTTON1, XBUTTON1));
+          if (m.usButtonFlags & RI_MOUSE_BUTTON_5_DOWN)     send_btn(WM_XBUTTONDOWN, MAKEWPARAM(wp | MK_XBUTTON2, XBUTTON2));
+          if (m.usButtonFlags & RI_MOUSE_BUTTON_5_UP)       send_btn(WM_XBUTTONUP, MAKEWPARAM(wp & ~MK_XBUTTON2, XBUTTON2));
         }
 
         if (m.usButtonFlags & RI_MOUSE_WHEEL) {
           SHORT d = (SHORT) m.usButtonData;
           WPARAM w = MAKEWPARAM(wp & 0xFFFF, (UINT16) d);
           LPARAM l = MAKELPARAM((WORD) (SHORT) x, (WORD) (SHORT) y);
-          ImGui_ImplWin32_WndProcHandler(m_hwnd, WM_MOUSEWHEEL, w, l);
+          queueInputEvent(m_hwnd, WM_MOUSEWHEEL, w, l);
         }
         if (m.usButtonFlags & RI_MOUSE_HWHEEL) {
           SHORT d = (SHORT) m.usButtonData;
           WPARAM w = MAKEWPARAM(wp & 0xFFFF, (UINT16) d);
           LPARAM l = MAKELPARAM((WORD) (SHORT) x, (WORD) (SHORT) y);
-          ImGui_ImplWin32_WndProcHandler(m_hwnd, WM_MOUSEHWHEEL, w, l);
+          queueInputEvent(m_hwnd, WM_MOUSEHWHEEL, w, l);
         }
       } else {
         if (m_mouseInsideOverlay) {
           m_mouseInsideOverlay = false;
-          ImGui_ImplWin32_WndProcHandler(m_hwnd, WM_MOUSELEAVE, 0, 0);
+          queueInputEvent(m_hwnd, WM_MOUSELEAVE, 0, 0);
+        }
+
+        // A press may begin inside and be released after the pointer leaves.
+        // Always pass releases through; duplicate up events are harmless, while
+        // dropping one leaves ImGui believing a button is held indefinitely.
+        if (m.usButtonFlags & RI_MOUSE_LEFT_BUTTON_UP) {
+          queueInputEvent(m_hwnd, WM_LBUTTONUP, 0, 0);
+        }
+        if (m.usButtonFlags & RI_MOUSE_RIGHT_BUTTON_UP) {
+          queueInputEvent(m_hwnd, WM_RBUTTONUP, 0, 0);
+        }
+        if (m.usButtonFlags & RI_MOUSE_MIDDLE_BUTTON_UP) {
+          queueInputEvent(m_hwnd, WM_MBUTTONUP, 0, 0);
+        }
+        if (m.usButtonFlags & RI_MOUSE_BUTTON_4_UP) {
+          queueInputEvent(m_hwnd, WM_XBUTTONUP, MAKEWPARAM(0, XBUTTON1), 0);
+        }
+        if (m.usButtonFlags & RI_MOUSE_BUTTON_5_UP) {
+          queueInputEvent(m_hwnd, WM_XBUTTONUP, MAKEWPARAM(0, XBUTTON2), 0);
         }
       }
 
       return 0;
     }
 
-    // Still handle keyboard using ImGui
-    break;
-  }
-  }
+    if (ri->header.dwType == RIM_TYPEKEYBOARD) {
+      const RAWKEYBOARD& k = ri->data.keyboard;
+      if (k.VKey == 255) {
+        return 0;
+      }
 
-  // Let ImGui Win32 backend handle everything else (keyboard, etc.)
-  if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+      // HRAWINPUT is only valid while this WM_INPUT is being handled. Convert
+      // the copied packet to ordinary key messages before queueing it, so the
+      // render thread never dereferences an expired raw-input handle.
+      LPARAM keyLParam = 1 | (static_cast<LPARAM>(k.MakeCode) << 16);
+      if (k.Flags & RI_KEY_E0) {
+        keyLParam |= static_cast<LPARAM>(KF_EXTENDED) << 16;
+      }
+      if (k.Message == WM_KEYUP || k.Message == WM_SYSKEYUP) {
+        keyLParam |= static_cast<LPARAM>(KF_REPEAT | KF_UP) << 16;
+      }
+      queueInputEvent(m_hwnd, k.Message, k.VKey, keyLParam);
+
+      // Raw keyboard input does not generate WM_CHAR for this non-activating
+      // sink. Preserve the previous raw-input path's text generation, but
+      // serialize the resulting UTF-16 code units with the key event.
+      const bool isDown = k.Message == WM_KEYDOWN || k.Message == WM_SYSKEYDOWN;
+      if (isDown) {
+        BYTE keyboardState[256] = {};
+        if (GetKeyboardState(keyboardState)) {
+          WCHAR text[8];
+          const int count = ToUnicodeEx(k.VKey, k.MakeCode, keyboardState,
+            text, static_cast<int>(sizeof(text) / sizeof(text[0])), 0, GetKeyboardLayout(0));
+          for (int i = 0; i < count; ++i) {
+            queueInputEvent(m_hwnd, WM_CHAR, text[i], 0);
+          }
+        }
+      }
+      return 0;
+    }
+
     return 0;
+  }
+  }
 
   return DefWindowProcW(m_hwnd, msg, wParam, lParam);
 }

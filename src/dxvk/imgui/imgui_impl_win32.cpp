@@ -129,6 +129,18 @@ static ImGui_ImplWin32_Data* ImGui_ImplWin32_GetBackendData()
     return ImGui::GetCurrentContext() ? (ImGui_ImplWin32_Data*)ImGui::GetIO().BackendPlatformUserData : NULL;
 }
 
+// NV-DXVK start: Synchronize semantic mouse tracking state
+void ImGui_ImplWin32_SetMouseTracked(bool tracked)
+{
+    ImGui_ImplWin32_Data* bd = ImGui_ImplWin32_GetBackendData();
+    if (bd == NULL)
+        return;
+    bd->MouseTracked = tracked;
+    if (!tracked)
+        bd->MouseHwnd = NULL;
+}
+// NV-DXVK end
+
 // Functions
 bool    ImGui_ImplWin32_Init(void* hwnd)
 {

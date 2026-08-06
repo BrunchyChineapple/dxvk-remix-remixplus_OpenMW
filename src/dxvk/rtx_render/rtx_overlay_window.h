@@ -23,6 +23,10 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <mutex>
+#include <vector>
+
 #include "../../util/rc/util_rc.h"
 #include "../../util/rc/util_rc_ptr.h"
 #include "rtx_common_object.h"
@@ -55,6 +59,18 @@ namespace fork_hooks {
 
     void gameWndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT overlayWndProc(HWND, UINT, WPARAM, LPARAM);
+
+    // The overlay window has its own message-pump thread, while ImGui is driven by
+    // the render/present thread. Queue messages here and feed ImGui only from the
+    // latter; ImGui's input event vector is not safe for concurrent producers.
+    void queueInputEvent(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    void processInputEvents();
+
+    void setInputDisplaySize(uint32_t width, uint32_t height) {
+      const uint64_t extent = (static_cast<uint64_t>(width) << 32)
+                            | static_cast<uint64_t>(height);
+      m_inputDisplayExtent.store(extent, std::memory_order_relaxed);
+    }
 
     // Recency check for raw-input delivery. Used by overlayInputForward to
     // gate mouse forwarding via the game wnd proc fallback: when Path B
@@ -110,5 +126,38 @@ namespace fork_hooks {
     // Raw-input liveness gate (see isRawInputRecent() above).
     static constexpr uint64_t kRawInputRecencyMs = 100;
     std::atomic<uint64_t> m_lastRawInputTickMs { 0 };
+
+    enum class InputEventType : uint8_t {
+      MousePosition,
+      MouseButton,
+      MouseWheel,
+      Key,
+      Character,
+      Focus,
+    };
+
+    struct InputEvent {
+      InputEventType type;
+      float x = 0.0f;
+      float y = 0.0f;
+      int code = 0;
+      int nativeKeycode = 0;
+      int nativeScancode = 0;
+      uint8_t modifiers = 0;
+      bool down = false;
+    };
+
+    std::mutex m_inputEventMutex;
+    std::vector<InputEvent> m_inputEvents;
+
+    // Render-output extent, packed as width:height so the overlay thread can
+    // take one coherent snapshot without reading ImGui state cross-thread.
+    std::atomic<uint64_t> m_inputDisplayExtent { 0 };
+
+    // Left/right Ctrl, Shift, Alt, and Super state, protected by the event
+    // mutex. Modifier snapshots are attached to each key event so a complete
+    // press/release sequence drained in one frame retains its original order.
+    uint8_t m_pressedModifiers = 0;
+    bool m_pressedModifiersInitialized = false;
   };
 }

@@ -18,7 +18,6 @@
 #include "rtx_fork_hooks.h"
 
 #include "rtx_overlay_window.h"       // GameOverlay
-#include "imgui/imgui_impl_win32.h"   // ImGui_ImplWin32_WndProcHandler
 #include "imgui/imgui.h"              // ImGui::SetCurrentContext (imguiContextPin)
 #include "imgui/implot.h"             // ImPlot::SetCurrentContext (imguiContextPin)
 #include "imgui/imgui_remix_exports.h" // remixapi_imgui_InvokeDrawCallback (wrapperTabDraw)
@@ -34,8 +33,6 @@
 #include <atomic>
 #include "rtx/pass/screen_overlay/screen_overlay.h"
 #include <rtx_shaders/screen_overlay.h>
-
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 namespace dxvk {
 
@@ -99,13 +96,12 @@ namespace fork_hooks {
     switch (msg) {
     // Keyboard: gated on Path B liveness, same as mouse below.
     //
-    // Path B is NOT mouse-only — the fork's ImGui Win32 backend handles
-    // WM_INPUT for RIM_TYPEKEYBOARD too (imgui_impl_win32.cpp), feeding both
-    // key events AND text (ToUnicodeEx -> AddInputCharacterUTF16) straight to
-    // ImGui. overlayWndProc's WM_INPUT case falls through to that backend for
-    // any non-mouse raw packet, so keyboard reaches ImGui via Path B exactly
-    // as mouse does. RIDEV_NOLEGACY on the keyboard device only suppresses the
-    // overlay's *legacy* WM_KEY* messages; it does nothing about the raw path.
+    // Path B is not mouse-only: overlayWndProc handles WM_INPUT for
+    // RIM_TYPEKEYBOARD too. It copies each raw packet,
+    // decodes its key/modifier/text state, and queues semantic events for the
+    // render thread, so keyboard reaches ImGui via Path B exactly as mouse does.
+    // The copy is required because HRAWINPUT is valid only while WM_INPUT is
+    // being handled, and the queue is required because ImGui is not thread-safe.
     //
     // So Path A (this block, the game wnd proc fallback) and Path B both
     // deliver every keypress and character — producing doubled keys / doubled
@@ -128,7 +124,7 @@ namespace fork_hooks {
         break;
       }
       // lParam has no coordinates, pass through as-is.
-      ImGui_ImplWin32_WndProcHandler(targetHwnd, msg, wParam, lParam);
+      overlay.queueInputEvent(targetHwnd, msg, wParam, lParam);
       break;
 
     // Mouse motion + buttons + wheels: gated on Path B liveness.
@@ -165,7 +161,7 @@ namespace fork_hooks {
         ScreenToClient(overlayHwnd, &pt);
         translated = MAKELPARAM(pt.x, pt.y);
       }
-      ImGui_ImplWin32_WndProcHandler(targetHwnd, msg, wParam, translated);
+      overlay.queueInputEvent(targetHwnd, msg, wParam, translated);
       break;
     }
 
@@ -175,7 +171,7 @@ namespace fork_hooks {
       if (overlay.isRawInputRecent()) {
         break;
       }
-      ImGui_ImplWin32_WndProcHandler(targetHwnd, msg, wParam, lParam);
+      overlay.queueInputEvent(targetHwnd, msg, wParam, lParam);
       break;
 
     default:

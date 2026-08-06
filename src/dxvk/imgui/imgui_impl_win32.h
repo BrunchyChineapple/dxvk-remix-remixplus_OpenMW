@@ -18,6 +18,11 @@
 IMGUI_IMPL_API bool     ImGui_ImplWin32_Init(void* hwnd);
 IMGUI_IMPL_API void     ImGui_ImplWin32_Shutdown();
 IMGUI_IMPL_API void     ImGui_ImplWin32_NewFrame();
+// NV-DXVK start: Synchronize semantic mouse tracking state
+// Fork helper for semantic input queues which bypass WndProcHandler. This only
+// updates backend state; callers remain responsible for io.AddMousePosEvent().
+IMGUI_IMPL_API void     ImGui_ImplWin32_SetMouseTracked(bool tracked);
+// NV-DXVK end
 
 // Win32 message handler your application need to call.
 // - Intentionally commented out in a '#if 0' block to avoid dragging dependencies on <windows.h> from this helper.

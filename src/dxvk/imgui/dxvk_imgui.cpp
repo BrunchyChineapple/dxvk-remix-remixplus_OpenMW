@@ -697,16 +697,18 @@ namespace dxvk {
   }
 
   void ImGUI::wndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    fork_hooks::imguiContextPin(m_context, m_plotContext);
+    // NV-DXVK start: Serialize hosted overlay input
     if (m_overlayWin.ptr() != nullptr) {
       m_overlayWin->gameWndProcHandler(hWnd, msg, wParam, lParam);
     } else {
+      fork_hooks::imguiContextPin(m_context, m_plotContext);
       // Note this is the old method for grabbing keyboard/mouse inputs which relies on hooking
       //  the wndproc from the original game, and sending that data across the x86 -> x64 bridge.  
       //  We see compatibilities in older applications with this approach that are tricky to resolve.
       //  Favour the new approach `useNewGuiInputMethod` when possible.
       ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
     }
+    // NV-DXVK end
   }
 
   void ImGUI::showMemoryStats() const {
@@ -4376,6 +4378,16 @@ namespace dxvk {
 
       m_init = true;
     }
+
+    // NV-DXVK start: Drain hosted overlay input on the render thread
+    // GameOverlay owns a separate Win32 message-pump thread. Drain the plain
+    // events it collected only after this thread has selected and initialized
+    // ImGui's context, so InputEventsQueue has exactly one producer/consumer.
+    if (m_overlayWin.ptr() != nullptr) {
+      m_overlayWin->setInputDisplaySize(surfaceSize.width, surfaceSize.height);
+      m_overlayWin->processInputEvents();
+    }
+    // NV-DXVK end
 
     ImGui_ImplDxvk::NewFrame();
     ImGui_ImplWin32_NewFrame(); 
