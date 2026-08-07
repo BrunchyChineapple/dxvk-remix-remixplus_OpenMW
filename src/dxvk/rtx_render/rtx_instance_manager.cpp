@@ -854,13 +854,41 @@ namespace dxvk {
     } else {
       out.invertedBlend = false;
       out.emissiveBlend = false;
+
+      // Fork: a decal tag is honoured whether or not the draw blends.
+      //
+      // The blend requirement above is reasonable for the categories Remix infers for itself -- it decides
+      // something is a particle or a decal by recognising its texture, and for a D3D9 game the draws it
+      // recognises are blended anyway, so the gate never bites. It bites hard for a host that submits
+      // through the C API. There, tagging a texture as a decal in the developer menu is an explicit
+      // instruction from the user about geometry the runtime has no other information about, and an
+      // ordinary opaque or alpha-tested wall decoration -- a mural, a sign, a scorch mark -- resolves
+      // blendEnabled false and silently stayed a plain surface. The tag was recorded, the category was
+      // applied, and nothing downstream read it.
+      //
+      // The asymmetry is what gives it away: Hidden and Ignore are tested unconditionally a few hundred
+      // lines below, so a user could tag the same texture as hidden and watch it disappear, then tag it as
+      // a decal and watch nothing happen at all.
+      //
+      // Safe because the decal path does not actually need blending, only opacity. resolve.slangh bins a
+      // decal when its opacity exceeds a threshold and composites it onto the surface underneath, so an
+      // alpha-tested mural contributes where its alpha survives and leaves the wall showing where it does
+      // not. A texture with no alpha at all would composite as a solid rectangle, which is the honest
+      // result of asking for a decal from something that is fully opaque.
+      out.isDecal = drawCall.testCategoryFlags(DECAL_CATEGORY_FLAGS);
     }
     
     // Set the fully opaque flag
     // Note: Fully opaque surfaces can only be signaled when no blending or alpha testing is done as well as no translucency material wise is used.
     // This is important for signaling when to not use the opacity channel in materials when it is not being used for anything.
 
-    out.isFullyOpaque = !blendEnabled && out.alphaTestType == AlphaTestType::kAlways; // use the blend/test type from the output, rather than legacy for this so replacements can override
+    // Fork: a decal is never fully opaque, whatever its blend and alpha test say.
+    //
+    // This flag's stated purpose is to signal when a material's opacity channel is unused, and a decal's
+    // opacity is the one thing the decal path cannot do without: resolve.slangh gates binning on it. An
+    // opaque draw that the user has explicitly tagged as a decal would otherwise be admitted to the decal
+    // bin and then have the very channel that decides its contribution declared irrelevant.
+    out.isFullyOpaque = !blendEnabled && out.alphaTestType == AlphaTestType::kAlways && !out.isDecal; // use the blend/test type from the output, rather than legacy for this so replacements can override
     out.isBlendingDisabled = !blendEnabled;
 
     return out;
