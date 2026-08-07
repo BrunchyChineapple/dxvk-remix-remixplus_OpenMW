@@ -78,6 +78,7 @@ namespace pnext::detail {
     remixapi_MaterialInfoTranslucentEXT,
     remixapi_MaterialInfoOpaqueEXT,
     remixapi_MaterialInfoOpaqueSubsurfaceEXT,
+    remixapi_MaterialInfoOpaqueTerrainEXT,
     remixapi_LightInfoSphereEXT,
     remixapi_LightInfoRectEXT,
     remixapi_LightInfoDiskEXT,
@@ -87,6 +88,7 @@ namespace pnext::detail {
     remixapi_LightInfoUSDEXT,
     remixapi_LightInfo,
     remixapi_MeshInfo,
+    remixapi_MeshInfoWindingEXT,
     remixapi_InstanceInfo,
     remixapi_InstanceInfoBoneTransformsEXT,
     remixapi_InstanceInfoBlendEXT,
@@ -106,6 +108,7 @@ namespace pnext::detail {
   template<> constexpr auto ToEnum< remixapi_MaterialInfoTranslucentEXT     > = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_TRANSLUCENT_EXT;
   template<> constexpr auto ToEnum< remixapi_MaterialInfoOpaqueEXT          > = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
   template<> constexpr auto ToEnum< remixapi_MaterialInfoOpaqueSubsurfaceEXT> = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_SUBSURFACE_EXT;
+  template<> constexpr auto ToEnum< remixapi_MaterialInfoOpaqueTerrainEXT   > = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_TERRAIN_EXT;
   template<> constexpr auto ToEnum< remixapi_LightInfoSphereEXT             > = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
   template<> constexpr auto ToEnum< remixapi_LightInfoRectEXT               > = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_RECT_EXT;
   template<> constexpr auto ToEnum< remixapi_LightInfoDiskEXT               > = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISK_EXT;
@@ -115,6 +118,7 @@ namespace pnext::detail {
   template<> constexpr auto ToEnum< remixapi_LightInfoUSDEXT                > = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_USD_EXT;
   template<> constexpr auto ToEnum< remixapi_LightInfo                      > = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
   template<> constexpr auto ToEnum< remixapi_MeshInfo                       > = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+  template<> constexpr auto ToEnum< remixapi_MeshInfoWindingEXT             > = REMIXAPI_STRUCT_TYPE_MESH_INFO_WINDING_EXT;
   template<> constexpr auto ToEnum< remixapi_InstanceInfo                   > = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
   template<> constexpr auto ToEnum< remixapi_InstanceInfoBoneTransformsEXT  > = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BONE_TRANSFORMS_EXT;
   template<> constexpr auto ToEnum< remixapi_InstanceInfoBlendEXT           > = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
@@ -132,6 +136,7 @@ namespace pnext::detail {
   template<>           struct Root< remixapi_MaterialInfoTranslucentEXT     >{ using Type = remixapi_MaterialInfo;              };
   template<>           struct Root< remixapi_MaterialInfoOpaqueEXT          >{ using Type = remixapi_MaterialInfo;              };
   template<>           struct Root< remixapi_MaterialInfoOpaqueSubsurfaceEXT>{ using Type = remixapi_MaterialInfo;              };
+  template<>           struct Root< remixapi_MaterialInfoOpaqueTerrainEXT   >{ using Type = remixapi_MaterialInfo;              };
   template<>           struct Root< remixapi_LightInfoSphereEXT             >{ using Type = remixapi_LightInfo;                 };
   template<>           struct Root< remixapi_LightInfoRectEXT               >{ using Type = remixapi_LightInfo;                 };
   template<>           struct Root< remixapi_LightInfoDiskEXT               >{ using Type = remixapi_LightInfo;                 };
@@ -139,6 +144,7 @@ namespace pnext::detail {
   template<>           struct Root< remixapi_LightInfoDistantEXT            >{ using Type = remixapi_LightInfo;                 };
   template<>           struct Root< remixapi_LightInfoDomeEXT               >{ using Type = remixapi_LightInfo;                 };
   template<>           struct Root< remixapi_LightInfoUSDEXT                >{ using Type = remixapi_LightInfo;                 };
+  template<>           struct Root< remixapi_MeshInfoWindingEXT             >{ using Type = remixapi_MeshInfo;                  };
   template<>           struct Root< remixapi_InstanceInfoBoneTransformsEXT  >{ using Type = remixapi_InstanceInfo;              };
   template<>           struct Root< remixapi_InstanceInfoBlendEXT           >{ using Type = remixapi_InstanceInfo;              };
   template<>           struct Root< remixapi_InstanceInfoObjectPickingEXT   >{ using Type = remixapi_InstanceInfo;              };

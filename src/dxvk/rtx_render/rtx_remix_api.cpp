@@ -146,6 +146,10 @@ namespace {
     remixapi_MeshHandle handle;
     uint64_t hash;
     std::vector<OwnedSurface> surfaces;
+    // Winding declared by remixapi_MeshInfoWindingEXT, resolved while the caller's info chain is still
+    // alive. The deferred path materializes the geometry long after CreateMeshBatched has returned, so
+    // the pNext chain cannot be revisited then.
+    VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE;
   };
   // PendingScreenOverlay struct and s_pendingScreenOverlay optional were removed
   // in migration #7b. They now live exclusively in rtx_fork_api_entry.cpp
@@ -459,7 +463,11 @@ namespace {
           src.getSubsurfaceMaxSampleRadius(),
           src.getFilterMode(),
           src.getWrapModeU(),
-          src.getWrapModeV()
+          src.getWrapModeV(),
+          // fork: the terrain baker's mask UV mapping rides through preload alongside the height texture
+          // that carries the mask itself, or the two would part company here.
+          src.getTerrainMaskTransformU(),
+          src.getTerrainMaskTransformV()
         } };
       }
       case MaterialDataType::Translucent: 
@@ -511,6 +519,10 @@ namespace {
     MaterialData toRtMaterialWithoutTexturePreload(const remixapi_MaterialInfo& info) {
       if (auto extOpaque = pnext::find<remixapi_MaterialInfoOpaqueEXT>(&info)) {
         auto extSubsurface = pnext::find<remixapi_MaterialInfoOpaqueSubsurfaceEXT>(&info);
+        // fork: absent for everything but a host-submitted terrain layer, and absence is a valid answer
+        // rather than an error -- it leaves the mask UV mapping at identity, which is what a material with
+        // no coverage mask wants. No version gate for the same reason: an older host simply never chains it.
+        auto extTerrain = pnext::find<remixapi_MaterialInfoOpaqueTerrainEXT>(&info);
         return MaterialData { OpaqueMaterialData {
           {},
           {},
@@ -558,6 +570,10 @@ namespace {
           info.filterMode,
           info.wrapModeU,
           info.wrapModeV,
+          extTerrain ? Vector3 { extTerrain->maskTransformU[0], extTerrain->maskTransformU[1], extTerrain->maskTransformU[2] }
+                     : Vector3 { 1.f, 0.f, 0.f },
+          extTerrain ? Vector3 { extTerrain->maskTransformV[0], extTerrain->maskTransformV[1], extTerrain->maskTransformV[2] }
+                     : Vector3 { 0.f, 1.f, 0.f },
         } };
       }
       if (auto extTranslucent = pnext::find<remixapi_MaterialInfoTranslucentEXT>(&info)) {
@@ -1041,6 +1057,18 @@ namespace {
     return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
   }
 
+  // Resolves the winding a host declared for a mesh into the front face RasterGeometry expects.
+  //
+  // Clockwise when nothing is declared. That was the value this file hardcoded before the extension
+  // existed, so hosts that do not know about it keep the behaviour they were written against.
+  static VkFrontFace resolveExternalMeshFrontFace(const remixapi_MeshInfo* info) {
+    if (auto winding = pnext::find<remixapi_MeshInfoWindingEXT>(info)) {
+      return winding->counterClockwise ? VK_FRONT_FACE_COUNTER_CLOCKWISE
+                                       : VK_FRONT_FACE_CLOCKWISE;
+    }
+    return VK_FRONT_FACE_CLOCKWISE;
+  }
+
   remixapi_ErrorCode REMIXAPI_CALL remixapi_CreateMesh(
     const remixapi_MeshInfo* info,
     remixapi_MeshHandle* out_handle) {
@@ -1135,7 +1163,7 @@ namespace {
         dst.externalMaterial = src.material;
         dst.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         dst.cullMode = VK_CULL_MODE_NONE; // this will be overwritten by the instance info at draw time
-        dst.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        dst.frontFace = resolveExternalMeshFrontFace(info);
         dst.vertexCount = src.vertices_count; assert(src.vertices_count < std::numeric_limits<uint32_t>::max());
         dst.positionBuffer = dxvk::RasterBuffer { vertexSlice, offsetof(remixapi_HardcodedVertex, position), sizeof(remixapi_HardcodedVertex), VK_FORMAT_R32G32B32_SFLOAT };
         dst.normalBuffer = dxvk::RasterBuffer { vertexSlice, offsetof(remixapi_HardcodedVertex, normal), sizeof(remixapi_HardcodedVertex), VK_FORMAT_R32G32B32_SFLOAT };
@@ -1174,7 +1202,7 @@ namespace {
   // meshHash is the caller's own mesh hash, threaded through so stampExternalMeshHashes can derive
   // deterministic component hashes from it -- see that function for why a counter was not good enough.
   std::vector<dxvk::RasterGeometry> buildExternalMeshSurfacesFromOwned(
-      const std::vector<OwnedSurface>& surfaces, uint64_t meshHash) {
+      const std::vector<OwnedSurface>& surfaces, uint64_t meshHash, VkFrontFace frontFace) {
     auto allocatedSurfaces = std::vector<dxvk::RasterGeometry> {};
     allocatedSurfaces.reserve(surfaces.size());
 
@@ -1248,7 +1276,7 @@ namespace {
       dst.externalMaterial = src.material;
       dst.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
       dst.cullMode = VK_CULL_MODE_NONE; // this will be overwritten by the instance info at draw time
-      dst.frontFace = VK_FRONT_FACE_CLOCKWISE;
+      dst.frontFace = frontFace;
       dst.vertexCount = static_cast<uint32_t>(src.vertices.size());
       assert(src.vertices.size() < std::numeric_limits<uint32_t>::max());
       dst.positionBuffer = dxvk::RasterBuffer { vertexSlice, offsetof(remixapi_HardcodedVertex, position), sizeof(remixapi_HardcodedVertex), VK_FORMAT_R32G32B32_SFLOAT };
@@ -1278,7 +1306,7 @@ namespace {
     }
     auto& assets = ctx->getCommonObjects()->getSceneManager().getAssetReplacer();
     for (auto& mesh : meshCreates) {
-      auto allocatedSurfaces = buildExternalMeshSurfacesFromOwned(mesh.surfaces, mesh.hash);
+      auto allocatedSurfaces = buildExternalMeshSurfacesFromOwned(mesh.surfaces, mesh.hash, mesh.frontFace);
       assets->registerExternalMesh(mesh.handle, std::move(allocatedSurfaces));
     }
   }
@@ -1323,6 +1351,7 @@ namespace {
     PendingMeshCreate pending;
     pending.handle = handle;
     pending.hash = info->hash;
+    pending.frontFace = resolveExternalMeshFrontFace(info);
     pending.surfaces.reserve(info->surfaces_count);
 
     for (uint32_t i = 0; i < info->surfaces_count; i++) {

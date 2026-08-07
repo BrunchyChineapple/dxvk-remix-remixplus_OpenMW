@@ -247,6 +247,7 @@ dxvk_src = files([
   'rtx_render/rtx_fork_precipitation.cpp',
   'rtx_render/rtx_fork_precipitation.h',
   'rtx_render/rtx_fork_submit.cpp',
+  'rtx_render/rtx_fork_terrain_bake.cpp',
   'rtx_render/rtx_fork_upscaler_ui.cpp',
   'rtx_render/rtx_fork_tonemap.cpp',
   'rtx_render/rtx_fork_tonemap.h',

@@ -89,7 +89,15 @@
   /* Sampler State */ \
   X(FilterMode,                       filter_mode,                            uint8_t,        lss::Mdl::Filter::Nearest,  lss::Mdl::Filter::Linear,  lss::Mdl::Filter::Linear)  \
   X(WrapModeU,                        wrap_mode_u,                            uint8_t,        lss::Mdl::WrapMode::Clamp,  lss::Mdl::WrapMode::Clip,  lss::Mdl::WrapMode::Repeat) \
-  X(WrapModeV,                        wrap_mode_v,                            uint8_t,        lss::Mdl::WrapMode::Clamp,  lss::Mdl::WrapMode::Clip,  lss::Mdl::WrapMode::Repeat)
+  X(WrapModeV,                        wrap_mode_v,                            uint8_t,        lss::Mdl::WrapMode::Clamp,  lss::Mdl::WrapMode::Clip,  lss::Mdl::WrapMode::Repeat) \
+  /* Fork addition: the terrain baker's coverage mask UV mapping, supplied through                            */ \
+  /* remixapi_MaterialInfoOpaqueTerrainEXT. Two rows of an affine applied to (u, v, 1), taking the texcoord    */ \
+  /* submitted with the mesh to the UV at which HeightTexture carries this terrain layer's coverage. Only      */ \
+  /* fork_hooks::externalDrawTerrainBake reads these, and only when HeightTexture is set on an API terrain     */ \
+  /* draw, so the identity default is inert for every other material -- including USD replacements, which      */ \
+  /* simply have no such attribute to deserialize. See docs/fork-touchpoints.md.                               */ \
+  X(TerrainMaskTransformU,            terrain_mask_transform_u,               Vector3,        Vector3(-65504.f),          Vector3(65504.f),          Vector3(1.f, 0.f, 0.f)) \
+  X(TerrainMaskTransformV,            terrain_mask_transform_v,               Vector3,        Vector3(-65504.f),          Vector3(65504.f),          Vector3(0.f, 1.f, 0.f))
 
 #define LIST_OPAQUE_MATERIAL_PARAMS(X)\
   LIST_OPAQUE_MATERIAL_TEXTURES(X) \

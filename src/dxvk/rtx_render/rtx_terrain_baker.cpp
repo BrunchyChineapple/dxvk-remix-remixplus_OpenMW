@@ -680,7 +680,12 @@ namespace dxvk {
       // NOTE: The terrain defines it's own sampler, and these are the modes it uses.
       lss::Mdl::Filter::Linear,
       lss::Mdl::WrapMode::Clamp, // U
-      lss::Mdl::WrapMode::Clamp  // V
+      lss::Mdl::WrapMode::Clamp, // V
+      // fork: identity. This is the material the baker *publishes* -- the finished cascade set, sampled by
+      // generated texcoords -- not one of the layers it consumes, so it has no coverage mask and no mapping
+      // for one. See LIST_OPAQUE_MATERIAL_CONSTANTS in rtx_material_data.h.
+      Vector3(1.f, 0.f, 0.f), // OpaqueMaterial::TerrainMaskTransformU
+      Vector3(0.f, 1.f, 0.f)  // OpaqueMaterial::TerrainMaskTransformV
     ));
 
     m_hasInitializedMaterialDataThisFrame = true;

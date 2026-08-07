@@ -139,6 +139,8 @@ extern "C" {
     REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_PARTICLE_SYSTEM_EXT    = 26,
     REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT     = 27,
     REMIXAPI_STRUCT_TYPE_CAMERA_MEDIUM_INFO                   = 28,
+    REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_TERRAIN_EXT     = 29,
+    REMIXAPI_STRUCT_TYPE_MESH_INFO_WINDING_EXT                = 30,
     // NOTE: if adding a new struct, register it in 'rtx_remix_specialization.inl'
     //       and only extend this enum by appending, never adjust the order of these 
     //       as that will break backwards compatibility.
@@ -280,6 +282,30 @@ extern "C" {
     remixapi_Path       subsurfaceRadiusTexture;
   } remixapi_MaterialInfoOpaqueSubsurfaceEXT;
 
+  // Valid only if remixapi_MaterialInfo contains remixapi_MaterialInfoOpaqueEXT in pNext chain.
+  //
+  // Describes one layer of a multi-layer terrain chunk, for a host that submits its terrain one layer per
+  // draw and wants the runtime's terrain baker to composite them. Only the terrain baker reads this.
+  //
+  // The layer's coverage mask itself travels in the opaque extension's heightTexture. What cannot travel
+  // with it is the mask's own UV mapping: a terrain layer tiles its diffuse many times across a chunk
+  // while stretching its coverage exactly once over it, and a mesh carrying a single texcoord set can
+  // only express one of those two frequencies. Hence a second mapping, stated rather than derived.
+  //
+  // Stated by the host on purpose. The inset a host applies when sampling its blend map is that host's own
+  // convention -- OpenMW, for instance, scales by s/(s+1) about the centre and nudges by a quarter texel to
+  // match how Morrowind looked -- and nothing about the submitted geometry reveals it. Deriving it in the
+  // runtime means encoding a guess about the host, which is both wrong to do and easy to get wrong.
+  typedef struct remixapi_MaterialInfoOpaqueTerrainEXT {
+    remixapi_StructType sType;
+    void*               pNext;
+    // Affine map from the texcoord submitted with the mesh to the coverage mask's UV, as two rows applied
+    // to (u, v, 1): maskU = maskTransformU[0]*u + maskTransformU[1]*v + maskTransformU[2], and likewise
+    // for V. Identity leaves the mask sampled in the submitted texcoord's own space.
+    float               maskTransformU[3];
+    float               maskTransformV[3];
+  } remixapi_MaterialInfoOpaqueTerrainEXT;
+
   typedef struct remixapi_MaterialInfoTranslucentEXT {
     remixapi_StructType sType;
     void*               pNext;
@@ -368,6 +394,24 @@ extern "C" {
     const remixapi_MeshInfoSurfaceTriangles* surfaces_values;
     uint32_t                                 surfaces_count;
   } remixapi_MeshInfo;
+
+  // Declares the triangle winding order of a mesh's index data.
+  //
+  // Ray tracing derives a triangle's facing from its winding, not from the vertex normals, so a mesh
+  // whose winding is not what the runtime assumes resolves as back-facing over its entire surface. That
+  // is close to invisible for ordinary lit geometry -- shading uses the normal buffer, so the surface
+  // still looks correct -- but it silently disables every feature gated on a front hit. Decals are the
+  // notable one: they are only recorded when the ray hits the front of a triangle, so undeclared
+  // winding means no decal in the scene is ever composited.
+  //
+  // Absent this extension the winding is assumed clockwise, which is the historical behaviour of the
+  // API and matches Direct3D's default. Engines derived from OpenGL are usually counter-clockwise and
+  // must say so here.
+  typedef struct remixapi_MeshInfoWindingEXT {
+    remixapi_StructType                      sType;
+    void*                                    pNext;
+    remixapi_Bool                            counterClockwise;
+  } remixapi_MeshInfoWindingEXT;
 
   typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_CreateMesh)(
     const remixapi_MeshInfo*  info,

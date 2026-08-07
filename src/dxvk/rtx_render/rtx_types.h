@@ -662,9 +662,17 @@ using CategoryFlags = Flags<InstanceCategories>;
 // to private setCategory. See docs/fork-touchpoints.md.
 struct MaterialData;
 struct DrawCallState;
+class SceneManager;
+class DxvkContext;
 namespace fork_hooks {
   void externalDrawTextureCategories(XXH64_hash_t textureHash,
                                      DrawCallState& drawCall);
+  // Needs private setCategory for the same reason externalDrawTextureCategories does: it tags overlay
+  // terrain layers as decals so their coverage has somewhere to composite, and it is the only place that
+  // can, because distinguishing an overlay from the base layer requires the material rather than the
+  // texture hash. See docs/fork-touchpoints.md.
+  bool externalDrawTerrainBake(const Rc<DxvkContext>& ctx, SceneManager& scene,
+                               DrawCallState& drawCall, const MaterialData*& material);
   // Fills in the weather precipitation emitter's draw call (transform + the
   // blend state the generated particle geometry inherits). Needs access to
   // DrawCallState's private transformData / materialData, same as the API's
@@ -863,6 +871,9 @@ private:
 
   // Fork touchpoint: the external-draw texture-category hook needs access to
   // private setCategory. See docs/fork-touchpoints.md.
+  friend bool fork_hooks::externalDrawTerrainBake(
+      const Rc<DxvkContext>& ctx, SceneManager& scene,
+      DrawCallState& drawCall, const MaterialData*& material);
   friend void fork_hooks::externalDrawTextureCategories(
     XXH64_hash_t textureHash, DrawCallState& drawCall);
 

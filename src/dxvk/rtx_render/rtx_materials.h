@@ -1774,6 +1774,8 @@ class SceneManager;
 struct DrawCallState;
 struct MaterialData;
 namespace fork_hooks {
+  bool externalDrawTerrainBake(const Rc<DxvkContext>& ctx, SceneManager& scene,
+                               DrawCallState& drawCall, const MaterialData*& material);
   void externalDrawTextureCategories(XXH64_hash_t textureHash, DrawCallState& drawCall);
 }
 
@@ -1896,8 +1898,13 @@ private:
   friend class SceneManager;
   friend struct RemixAPIPrivateAccessor;
 
-  // Fork touchpoint: the terrain coverage path has to point the alpha argument sources at the vertex
-  // colour so a terrain layer's coverage reaches opacity. See docs/fork-touchpoints.md.
+  // Fork touchpoint: the API-path terrain bake builds the same override material RtxContext::bakeTerrain
+  // builds for a D3D9 draw, and needs the same access to do it. See docs/fork-touchpoints.md.
+  friend bool fork_hooks::externalDrawTerrainBake(const Rc<DxvkContext>& ctx, SceneManager& scene,
+                                                 DrawCallState& drawCall, const MaterialData*& material);
+
+  // Fork touchpoint: terrain-as-decals has to point the alpha argument sources at the vertex colour so a
+  // terrain layer's coverage reaches opacity. See docs/fork-touchpoints.md.
   friend void fork_hooks::externalDrawTextureCategories(XXH64_hash_t textureHash, DrawCallState& drawCall);
 
   void updateCachedHash() {

@@ -1204,6 +1204,14 @@ namespace dxvk {
     currentInstance.m_vkInstance.flags = determineInstanceFlags(drawCall, currentInstance.surface);
     currentInstance.isFrontFaceFlipped = (currentInstance.m_vkInstance.flags & VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR) != 0;
 
+    // Fork diagnostic: the resolved surface for a terrain draw, where the values are final.
+    //
+    // The opacity path is confirmed open -- the alpha texture operations in
+    // opaque_surface_material_interaction.slangh run unconditionally (the applyTextureOperations gate is
+    // #if 0), and the surface carries Modulate with arg2 = VertexColor0. So opacity has to pick up the
+    // vertex alpha unless vertexColor.a reads as 1, which happens only when color0BufferIndex is invalid
+    // and surface_interaction.slangh falls back to white. That index is the one thing not yet measured, and
+    // it is uint16_t here against uint32_t on the CPU side. Remove with the other terrain diagnostics.
     // Apply the decal sort index for this instance so we can approximate order correctness on the GPU in AHS
     if (currentInstance.surface.alphaState.isDecal) {
       currentInstance.surface.decalSortOrder = m_decalSortOrderCounter++;
@@ -1226,6 +1234,17 @@ namespace dxvk {
       // that should be alpha tested instead, like some metallic stairs in Portal -- those should be resolved normally.
       (!currentInstance.surface.alphaState.isFullyOpaque && !currentInstance.surface.alphaState.isBlendingDisabled && currentInstance.m_isPlayerModel) ||
       currentInstance.surface.alphaState.emissiveBlend
+      // Terrain is deliberately not added here, and the reason is worth keeping.
+      //
+      // Sending alpha-blended terrain to the unordered TLAS looks right -- the unordered resolve is
+      // order-independent, which suits coplanar layers -- but it is not a general transparency path. It is
+      // the particle path: evaluateOpaqueApproximations in resolve.slangh shades whatever lands there from
+      // the volumetric froxel radiance cache via evalVolumetricNEE, with no sun and no shadows, and its own
+      // comment says the approximation is meant "on particles using opacity, not just every surface using
+      // opacity". Ground lit that way comes out flat and near-black, which is exactly what it did.
+      //
+      // Terrain layers go through the decal bin instead, which composites a decal's material onto the
+      // surface beneath it and then shades the result properly once. See the swap in rtx_fork_submit.cpp.
     ) {
       // Alpha-blended and emissive particles go to the separate "unordered" TLAS as non-opaque geometry
       currentInstance.m_geometryFlags = VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
@@ -1259,6 +1278,28 @@ namespace dxvk {
       currentInstance.m_geometryFlags = VK_GEOMETRY_OPAQUE_BIT_KHR;
     }
     
+    // Fork touchpoint: terrain coverage is written onto the surface here, not left to the draw call.
+    // See docs/fork-touchpoints.md.
+    //
+    // externalDrawTextureCategories already sets Modulate with arg2 = VertexColor0 on the draw call, and a
+    // log taken immediately before processDrawCallState confirms it is there. The surface still came out
+    // with LegacyMaterialData's defaults -- SelectArg1, Texture, None -- which selects the albedo's own
+    // alpha and discards the vertex colour entirely. A terrain diffuse is usually BC1 with no alpha, so
+    // opacity resolved to a flat 1 and every layer covered its chunk completely.
+    //
+    // The copy above only runs under isFirstUpdateThisFrame, and terrain is the case that breaks that
+    // assumption: the base layer and every overlay share one geometry and one transform, so they are the
+    // same instance drawn repeatedly and land in mergeInstanceHeuristics instead. Rather than depend on
+    // which draw of a chunk happens to win that race, the value the shader reads is set directly.
+    //
+    // Restricted to terrain because it is the only category whose coverage lives in vertex alpha rather
+    // than in its albedo.
+    if (drawCall.testCategoryFlags(InstanceCategories::Terrain)) {
+      currentInstance.surface.textureAlphaOperation = DxvkRtTextureOperation::Modulate;
+      currentInstance.surface.textureAlphaArg1Source = RtTextureArgSource::Texture;
+      currentInstance.surface.textureAlphaArg2Source = RtTextureArgSource::VertexColor0;
+    }
+
     // Enable backface culling for Portals to avoid additional hits to the back of Portals
     if (currentInstance.m_materialType == MaterialDataType::RayPortal) {
       currentInstance.m_vkInstance.flags &= ~VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
