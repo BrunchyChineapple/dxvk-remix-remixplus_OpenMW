@@ -35,8 +35,51 @@
 #include "../../util/log/log.h"
 #include "../../util/util_string.h"
 
+#include <mutex>
+#include <unordered_set>
+
 namespace dxvk {
 namespace fork_hooks {
+
+  namespace {
+    // Texture hashes already written for the capture in progress.
+    //
+    // The albedo used to be exported once per *material*, named after the material hash, and a host that
+    // derives several materials from one texture therefore wrote the same image out several times over.
+    // OpenMW does exactly that on purpose -- its material key mixes the texture hash with roughness,
+    // metallic, alpha test, blend and normal map -- so a measured interior capture came to 942 texture files
+    // holding 911 distinct images, 2 GB on disk of which 822 MB was byte-identical copies. One 2048-square
+    // albedo was written seven times at 21 MB a copy.
+    //
+    // Naming the file after the texture instead collapses those to one, and this set stops the redundant
+    // export work as well as the redundant bytes: without it, several materials would each schedule an
+    // async write to the same path and race each other over one file.
+    //
+    // Keyed on the capture id so a second capture in the same session starts clean rather than inheriting
+    // the first one's claims and skipping textures it never wrote.
+    std::mutex g_exportedTextureMutex;
+    std::string g_exportedTextureCaptureId;
+    std::unordered_set<XXH64_hash_t> g_exportedTextures;
+
+    /// True the first time \a textureHash is seen in the capture identified by \a captureId.
+    bool claimTextureExport(const std::string& captureId, XXH64_hash_t textureHash) {
+      std::lock_guard<std::mutex> lock(g_exportedTextureMutex);
+      if (g_exportedTextureCaptureId != captureId) {
+        g_exportedTextureCaptureId = captureId;
+        g_exportedTextures.clear();
+      }
+      return g_exportedTextures.insert(textureHash).second;
+    }
+
+    /// The file an albedo is written to. Named after the texture so that every material sharing it resolves
+    /// to one file, falling back to the material name only when there is no usable texture identity.
+    std::string albedoFileName(XXH64_hash_t textureHash, const std::string& matName) {
+      if (textureHash == 0 || textureHash == kEmptyHash) {
+        return matName + lss::ext::dds;
+      }
+      return dxvk::hashToString(textureHash) + lss::ext::dds;
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // captureMaterialApiPath
@@ -85,10 +128,14 @@ namespace fork_hooks {
       auto* imageView = colorTexture.getImageView();
       if (imageView && imageView->image().ptr()) {
         try {
-          const std::string albedoTexFilename(matName + lss::ext::dds);
-          capturer.m_exporter.dumpImageToFile(ctx, BASE_DIR + lss::commonDirName::texDir,
-                                              albedoTexFilename,
-                                              imageView->image());
+          const std::string albedoTexFilename(albedoFileName(textureHash, matName));
+          // The path is recorded whether or not this material is the one that writes the file, so every
+          // material sharing the texture references the single copy.
+          if (claimTextureExport(capturer.m_pCap->idStr, textureHash)) {
+            capturer.m_exporter.dumpImageToFile(ctx, BASE_DIR + lss::commonDirName::texDir,
+                                                albedoTexFilename,
+                                                imageView->image());
+          }
           const std::string albedoTexPath = str::format(BASE_DIR + lss::commonDirName::texDir, albedoTexFilename);
           lssMat.albedoTexPath = albedoTexPath;
         } catch (const std::exception& e) {
@@ -117,11 +164,13 @@ namespace fork_hooks {
 
           // Validate image has valid dimensions
           if (imageInfo.extent.width > 0 && imageInfo.extent.height > 0) {
-            const std::string albedoTexFilename(matName + lss::ext::dds);
+            const std::string albedoTexFilename(albedoFileName(textureHash, matName));
             try {
-              capturer.m_exporter.dumpImageToFile(ctx, BASE_DIR + lss::commonDirName::texDir,
-                                                  albedoTexFilename,
-                                                  apiImageView->image());
+              if (claimTextureExport(capturer.m_pCap->idStr, textureHash)) {
+                capturer.m_exporter.dumpImageToFile(ctx, BASE_DIR + lss::commonDirName::texDir,
+                                                    albedoTexFilename,
+                                                    apiImageView->image());
+              }
               const std::string albedoTexPath = str::format(BASE_DIR + lss::commonDirName::texDir, albedoTexFilename);
               lssMat.albedoTexPath = albedoTexPath;
             } catch (const std::exception& e) {
