@@ -132,6 +132,45 @@ namespace dxvk {
 
   typedef fast_unordered_cache<std::vector<SecretReplacement>> SecretReplacements;
 
+  // Replacement geometry placed by its own world transform rather than by a game draw.
+  //
+  // Every other replacement here is keyed on the hash of a draw the game makes and is only submitted
+  // while that draw is being processed. That anchor is what gives it a position and what scopes it to
+  // the right place in the world. Scatter painted onto captured terrain has no such anchor available:
+  // the host builds its terrain itself, so the captured mesh hashes the brush painted against are
+  // never drawn, and nothing anchored to them can be reached at all.
+  //
+  // So these carry their own world placement -- and, just as importantly, the identity of the space
+  // they belong to. A world position on its own is ambiguous: interiors and the exterior share one
+  // numeric coordinate space, and the scatter spans many cells, so drawing purely by position puts
+  // exterior groundcover inside any interior that overlaps those coordinates and one town's
+  // groundcover in the next town.
+  //
+  // Two independent keys, because they cover different cases and neither covers both:
+  //   anchorMeshHash  the captured mesh this group was painted on. Anything painted on a static has a
+  //                   hash the host does reproduce, since statics come from the same source data, so
+  //                   "was that mesh drawn this frame" is an exact test needing no cell knowledge.
+  //   cellX/cellY     the exterior cell the group occupies, for the terrain case where the anchor
+  //                   hash can never appear. Only meaningful against a host-published set of active
+  //                   cells; it is not a licence to infer the active space from coordinates.
+  struct WorldAnchoredInstancerGroup {
+    std::vector<AssetReplacement> replacements;
+    // Stable identity for ReplacementInstance lookup, hashed from the group's USD path at load.
+    //
+    // Has to come from the path rather than from the transform or position, which is what the keyed
+    // paths derive identity from: every one of these groups sits at the same identity transform, so a
+    // position-derived key would collide across all of them and they would fight over one instance.
+    XXH64_hash_t identityHash = 0;
+    // 0 means the group arrived untagged. Such a group cannot be scoped, and drawing it
+    // unconditionally is exactly the interior-bleed bug, so callers must skip rather than guess.
+    XXH64_hash_t anchorMeshHash = 0;
+    int32_t cellX = 0;
+    int32_t cellY = 0;
+    bool hasCell = false;
+    // USD prim name, carried purely so a misplaced group can be identified in a log.
+    std::string debugName;
+  };
+
   // Asset replacements storage class.
   // Contains and owns the replacements, material and geometry objects.
   class AssetReplacements {
@@ -220,6 +259,7 @@ namespace dxvk {
       std::lock_guard<sync::Spinlock> lock(m_spinlock);
       m_meshReplacers.clear();
       m_lightReplacers.clear();
+      m_worldAnchoredInstancers.clear();
       m_materials.clear();
       m_geometries.clear();
       m_graphTopologies.clear();
@@ -230,12 +270,26 @@ namespace dxvk {
       return m_secretReplacements;
     }
 
+    // Append-only, unlike the keyed replacements above: nothing looks these up by hash, they are
+    // iterated wholesale each frame and gated individually.
+    void addWorldAnchoredInstancer(WorldAnchoredInstancerGroup&& group) {
+      std::lock_guard<sync::Spinlock> lock(m_spinlock);
+      m_worldAnchoredInstancers.emplace_back(std::move(group));
+    }
+
+    const std::vector<WorldAnchoredInstancerGroup>& worldAnchoredInstancers() const {
+      return m_worldAnchoredInstancers;
+    }
+
   private:
     mutable sync::Spinlock m_spinlock;
 
     // Replacements ready to be fed to the renderer
     fast_unordered_cache<std::vector<AssetReplacement>> m_meshReplacers;
     fast_unordered_cache<std::vector<AssetReplacement>> m_lightReplacers;
+
+    // Replacements that place themselves, rather than being placed by a game draw
+    std::vector<WorldAnchoredInstancerGroup> m_worldAnchoredInstancers;
 
     // Replacement geometry storage
     fast_unordered_cache<MeshReplacement> m_geometries;
@@ -254,6 +308,13 @@ namespace dxvk {
     std::vector<AssetReplacement>* getReplacementsForMesh(XXH64_hash_t hash);
     std::vector<AssetReplacement>* getReplacementsForLight(XXH64_hash_t hash);
     MaterialData* getReplacementMaterial(XXH64_hash_t hash);
+
+    // Every world-anchored group across all loaded mods, in load order.
+    //
+    // Pointers rather than copies because the groups own their AssetReplacement vectors and this is
+    // walked per frame. They remain valid until replacements are reloaded, which is the same lifetime
+    // the keyed accessors above already hand out.
+    std::vector<const WorldAnchoredInstancerGroup*> getWorldAnchoredInstancers();
 
     // process the replacement USD and create all the m_replacements entries.
     void initialize(const Rc<DxvkContext>& context);

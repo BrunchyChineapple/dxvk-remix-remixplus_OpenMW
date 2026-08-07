@@ -136,9 +136,14 @@ private:
   Watchdog<1000> m_usdChangeWatchdog;
 
   void addReplacementsSync(dxvk::Rc<dxvk::DxvkCommandList> cmdList, XXH64_hash_t hash, std::vector<AssetReplacement>& replacementVec);
+  void addWorldAnchoredSync(dxvk::Rc<dxvk::DxvkCommandList> cmdList, WorldAnchoredInstancerGroup&& group);
+  void processScatterBrushRecursive(Args& args, const pxr::UsdPrim& prim, uint32_t& groupCount, uint32_t& instancerCount, uint32_t& untagged);
   std::unordered_map<dxvk::DxvkCommandList*, std::thread> m_cmdListSyncThreads;
   // Asset replacement vector and hash to add when command list execution is complete
   std::unordered_map<dxvk::DxvkCommandList*, std::unordered_map<XXH64_hash_t, std::vector<AssetReplacement>>> m_meshReplacementsToAdd;
+  // Held back behind the same fence as the keyed replacements above: their geometry is uploaded on the
+  // same command list, so publishing before it completes would expose buffers the GPU has not filled.
+  std::unordered_map<dxvk::DxvkCommandList*, std::vector<WorldAnchoredInstancerGroup>> m_worldAnchoredToAdd;
 };
 
 // context and member variable arguments to pass down to anonymous functions (to avoid having USD in the header)
@@ -983,6 +988,85 @@ bool explicitlyNoReferences(const pxr::UsdPrim& prim) {
   return false;
 }
 
+// Walks /RootNode/ScatterBrush looking for tagged groups, and turns each into a world-anchored
+// replacement.
+//
+// Recursive rather than a single level of children because the depth is not fixed: a baked layer
+// namespaces its groups under a subscope so it cannot collide with groups the brush authors directly,
+// and both need to be found. What identifies a group is the tag, not its depth.
+//
+// A group that carries no anchor tag is skipped and counted. It cannot be scoped to a space, and
+// drawing it regardless is precisely the bug this design exists to prevent, so refusing it is the
+// honest behaviour -- silently placing it everywhere would look like a feature until it did not.
+void UsdMod::Impl::processScatterBrushRecursive(Args& args, const pxr::UsdPrim& prim,
+                                               uint32_t& groupCount, uint32_t& instancerCount,
+                                               uint32_t& untagged) {
+  static const pxr::TfToken kAnchorToken("scatterAnchorMesh");
+  static const pxr::TfToken kCellXToken("scatterCellX");
+  static const pxr::TfToken kCellYToken("scatterCellY");
+
+  const pxr::VtValue anchorValue = prim.GetCustomDataByKey(kAnchorToken);
+
+  if (anchorValue.IsHolding<std::string>()) {
+    // The tag is authored as hex text because that is what a USD file can carry losslessly and what a
+    // human reads when a group draws in the wrong cell. Parse it back to the hash the runtime compares.
+    XXH64_hash_t anchorHash = 0;
+    try {
+      anchorHash = static_cast<XXH64_hash_t>(std::stoull(anchorValue.Get<std::string>(), nullptr, 16));
+    } catch (const std::exception&) {
+      anchorHash = 0;
+    }
+
+    if (anchorHash == 0) {
+      ++untagged;
+      return;
+    }
+
+    std::vector<AssetReplacement> replacementVec;
+    // Args takes a mutable reference, so the walk's const prim needs a local copy. UsdPrim is a
+    // lightweight handle, so this costs nothing.
+    pxr::UsdPrim groupPrim = prim;
+    Args groupArgs = { args.context, args.xformCache, groupPrim, replacementVec };
+
+    if (processReplacement(groupArgs)) {
+      WorldAnchoredInstancerGroup group;
+      group.anchorMeshHash = anchorHash;
+      group.debugName = prim.GetName().GetString();
+
+      // Full path, not the leaf name: two mods may each author a group of the same name, and colliding
+      // identities would make them share one ReplacementInstance and flicker between each other.
+      const std::string primPath = prim.GetPath().GetString();
+      group.identityHash = XXH3_64bits(primPath.c_str(), primPath.size());
+
+      const pxr::VtValue cellX = prim.GetCustomDataByKey(kCellXToken);
+      const pxr::VtValue cellY = prim.GetCustomDataByKey(kCellYToken);
+      if (cellX.IsHolding<int>() && cellY.IsHolding<int>()) {
+        group.cellX = cellX.Get<int>();
+        group.cellY = cellY.Get<int>();
+        group.hasCell = true;
+      }
+
+      for (const AssetReplacement& replacement : replacementVec) {
+        if (replacement.instancesToObject && !replacement.instancesToObject->empty()) {
+          ++instancerCount;
+        }
+      }
+
+      group.replacements = std::move(replacementVec);
+      ++groupCount;
+      addWorldAnchoredSync(args.context->getCommandList(), std::move(group));
+    }
+
+    // A tagged group is a leaf as far as this walk is concerned: processReplacement has already taken
+    // everything below it. Recursing further would submit the same geometry twice.
+    return;
+  }
+
+  for (const pxr::UsdPrim& child : prim.GetFilteredChildren(pxr::UsdPrimIsActive)) {
+    processScatterBrushRecursive(args, child, groupCount, instancerCount, untagged);
+  }
+}
+
 bool UsdMod::Impl::processReplacement(Args& args) {
   ScopedCpuProfileZone();
   
@@ -1229,6 +1313,33 @@ void UsdMod::Impl::processUSD(const Rc<DxvkContext>& context) {
 
       if (processReplacement(args)) {
         addReplacementsSync(args.context->getCommandList(), variantHash, replacementVec);
+      }
+    }
+  }
+
+  // Process world-anchored scatter
+  //
+  // Separate from the /RootNode/meshes pass above because these are not keyed on a game draw. That
+  // pass can only reach geometry whose anchoring mesh the game actually draws, which is what makes it
+  // unable to carry scatter painted onto captured terrain when the host generates its own terrain.
+
+  {
+    pxr::UsdPrim scatterRoot = stage->GetPrimAtPath(pxr::SdfPath("/RootNode/ScatterBrush"));
+    if (scatterRoot.IsValid()) {
+      uint32_t groupCount = 0;
+      uint32_t instancerCount = 0;
+      uint32_t untagged = 0;
+
+      std::vector<AssetReplacement> scratch;
+      Args scatterArgs = { context, xformCache, scatterRoot, scratch };
+      processScatterBrushRecursive(scatterArgs, scatterRoot, groupCount, instancerCount, untagged);
+
+      if (groupCount > 0 || untagged > 0) {
+        Logger::info(str::format("[RTX Scatter] world-anchored groups loaded: ", groupCount,
+                                 " (", instancerCount, " point instancers)",
+                                 untagged > 0
+                                   ? str::format("; ", untagged, " skipped with no usable anchor tag")
+                                   : std::string()));
       }
     }
   }
@@ -1480,6 +1591,42 @@ void UsdMod::Impl::addReplacementsSync(dxvk::Rc<dxvk::DxvkCommandList> cmdList, 
         m_owner.m_replacements->set<AssetReplacement::eMesh>(it.first, std::move(it.second));
       }
       m_meshReplacementsToAdd[cmdList.ptr()].clear();
+
+      // Same fence, same reason: these were built from the same upload.
+      for (WorldAnchoredInstancerGroup& group : m_worldAnchoredToAdd[cmdList.ptr()]) {
+        m_owner.m_replacements->addWorldAnchoredInstancer(std::move(group));
+      }
+      m_worldAnchoredToAdd[cmdList.ptr()].clear();
+    });
+  }
+}
+
+void UsdMod::Impl::addWorldAnchoredSync(dxvk::Rc<dxvk::DxvkCommandList> cmdList, WorldAnchoredInstancerGroup&& group) {
+  m_worldAnchoredToAdd[cmdList.ptr()].emplace_back(std::move(group));
+
+  // Deliberately duplicates addReplacementsSync's thread creation rather than assuming that function
+  // ran first. A mod may contain scatter and no keyed mesh replacements at all, in which case nothing
+  // else would ever create the thread and these groups would sit in the pending map forever.
+  if (!m_cmdListSyncThreads[cmdList.ptr()].joinable()) {
+    m_cmdListSyncThreads[cmdList.ptr()] = std::thread([this, cmdList]() {
+      {
+        constexpr uint64_t initialSignalValue = 0;
+        constexpr uint64_t waitSignalValue = 1;
+        Rc<sync::Fence> replacementSyncSignal = new sync::Fence(initialSignalValue);
+
+        cmdList->queueSignal(replacementSyncSignal, waitSignalValue);
+        replacementSyncSignal->wait(waitSignalValue);
+      }
+
+      for (auto it : m_meshReplacementsToAdd[cmdList.ptr()]) {
+        m_owner.m_replacements->set<AssetReplacement::eMesh>(it.first, std::move(it.second));
+      }
+      m_meshReplacementsToAdd[cmdList.ptr()].clear();
+
+      for (WorldAnchoredInstancerGroup& group : m_worldAnchoredToAdd[cmdList.ptr()]) {
+        m_owner.m_replacements->addWorldAnchoredInstancer(std::move(group));
+      }
+      m_worldAnchoredToAdd[cmdList.ptr()].clear();
     });
   }
 }

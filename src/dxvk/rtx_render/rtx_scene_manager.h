@@ -153,6 +153,14 @@ public:
 
   void submitDrawState(Rc<DxvkContext> ctx, const DrawCallState& input, const MaterialData* overrideMaterialData);
   void submitExternalDraw(const Rc<DxvkContext>& ctx, std::unique_ptr<ExternalDrawState> state);
+
+  // Submits replacement geometry that places itself, once per frame.
+  //
+  // Must run after the frame's game draws and before prepareSceneData: the gate asks which meshes were
+  // drawn this frame, so those draws have to have been seen, and the instances this creates must exist
+  // before the TLAS is built from them.
+  void submitWorldAnchoredInstancers(Rc<DxvkContext> ctx);
+
   void setStartInMediumMaterial(const MaterialData& translucentMaterial);
   void clearStartInMediumMaterial();
 
@@ -254,6 +262,11 @@ public:
   // Mesh hash tracking
   void trackMeshHash(XXH64_hash_t meshHash);
   bool isMeshHashUsedThisFrame(XXH64_hash_t meshHash) const;
+
+  // Records the exterior cell a terrain draw sits in, and tests whether a cell is one the frame's
+  // terrain covers. Together these scope world-anchored scatter to the space being rendered.
+  void trackTerrainCell(const DrawCallState& input);
+  bool isTerrainCellActiveThisFrame(int32_t cellX, int32_t cellY) const;
   uint32_t getMeshHashUsageCount(XXH64_hash_t meshHash) const;
   void clearFrameMeshHashes();
 
@@ -456,6 +469,9 @@ private:
 
   // Mesh hash tracking for current frame (hash -> count)
   std::unordered_map<XXH64_hash_t, uint32_t> m_currentFrameMeshHashes;
+  // Exterior cells covered by terrain drawn this frame, packed x:y. Empty indoors, which is what makes
+  // exterior scatter unable to leak into interiors.
+  std::unordered_set<uint64_t> m_currentFrameTerrainCells;
 
   DrawCallTracker m_drawCallTracker;
 };

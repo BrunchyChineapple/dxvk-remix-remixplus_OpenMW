@@ -1213,6 +1213,20 @@ namespace dxvk {
     RTX_OPTION("rtx", bool, enableReplacementInstancerMeshRendering, true,
                "Enables or disables rendering GeomPointInstancer meshes using an optimized path.\n"
                "Requires reloading replacement assets.");
+    RTX_OPTION("rtx", bool, enableWorldAnchoredInstancers, true,
+               "Enables replacement geometry under /RootNode/ScatterBrush that places itself by its own\n"
+               "world transform instead of being anchored to a game draw.\n"
+               "Such geometry is needed when the surface it was authored against is not a mesh this game\n"
+               "draws -- scatter painted onto captured terrain, where the host generates its own terrain\n"
+               "and never produces the captured mesh hashes.");
+    RTX_OPTION("rtx", bool, worldAnchoredInstancersDrawUngated, false,
+               "BRING-UP ONLY. Draws every world-anchored group regardless of whether the space it was\n"
+               "authored in is the space currently being rendered.\n"
+               "This reproduces a real bug on purpose: a world position is ambiguous, since interiors and\n"
+               "the exterior share one coordinate space, so exterior groundcover will appear inside\n"
+               "interiors that overlap those coordinates. It exists only to verify that baked world\n"
+               "positions land at the right place, scale and orientation, which is a separate question\n"
+               "from whether they are correctly scoped. Leave off outside of that check.");
     RTX_OPTION("rtx", uint, adaptiveResolutionReservedGPUMemoryGiB, 2,
                "The amount of GPU memory in gibibytes to reserve away from consideration for adaptive resolution replacement textures.\n"
                "This value should only be changed to reflect the estimated amount of memory Remix itself consumes on the GPU (aside from texture loading, mostly from rendering-related buffers) and should not be changed otherwise.\n"

@@ -733,6 +733,13 @@ namespace dxvk {
       // consumes this frame's spawn contexts.
       fork_hooks::submitPrecipitation(*this);
 
+      // Fork: submit replacement geometry that places itself rather than being anchored to a game draw.
+      //
+      // Here specifically: after every draw this frame has been seen, because the gate asks which meshes
+      // were drawn, and before prepareSceneData, because that is what builds the GPU scene from the
+      // instances this creates.
+      getSceneManager().submitWorldAnchoredInstancers(this);
+
       // Update all the GPU buffers needed to describe the scene
       getSceneManager().prepareSceneData(this, m_execBarriers);
       

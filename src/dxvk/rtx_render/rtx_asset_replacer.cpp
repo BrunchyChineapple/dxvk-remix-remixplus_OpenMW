@@ -63,6 +63,24 @@ std::vector<AssetReplacement>* AssetReplacer::getReplacementsForLight(XXH64_hash
   return nullptr;
 }
 
+std::vector<const WorldAnchoredInstancerGroup*> AssetReplacer::getWorldAnchoredInstancers() {
+  std::vector<const WorldAnchoredInstancerGroup*> result;
+
+  // Gated by the same option as keyed mesh replacements: these are replacement meshes too, just ones
+  // that place themselves. Turning replacement meshes off and still drawing these would be surprising.
+  if (!RtxOptions::getEnableReplacementMeshes()) {
+    return result;
+  }
+
+  for (auto& mod : m_modManager.mods()) {
+    for (const WorldAnchoredInstancerGroup& group : mod->replacements().worldAnchoredInstancers()) {
+      result.push_back(&group);
+    }
+  }
+
+  return result;
+}
+
 MaterialData* AssetReplacer::getReplacementMaterial(XXH64_hash_t hash) {
   if (!RtxOptions::getEnableReplacementMaterials())
     return nullptr;

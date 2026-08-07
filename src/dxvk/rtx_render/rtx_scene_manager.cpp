@@ -1383,6 +1383,15 @@ namespace dxvk {
       return nullptr;
     }
 
+    // Fork: record which exterior cells this frame's terrain covers, so world-anchored scatter can be
+    // scoped to the space actually being rendered. See trackTerrainCell.
+    //
+    // Here rather than in submitDrawState, which is where it belongs by reading but not by execution:
+    // external (API) draws never pass through submitDrawState, they call this function directly. A host
+    // that submits its whole world through the API therefore contributed nothing at all, and the gate
+    // rejected every group because no cell was ever live. This function is the one both paths share.
+    trackTerrainCell(drawCallState);
+
     ObjectCacheState result = ObjectCacheState::kInvalid;
     BlasEntry* pBlas = nullptr;
     if (m_drawCallCache.get(drawCallState, &pBlas) == DrawCallCache::CacheState::kExisted) {
@@ -2438,6 +2447,162 @@ namespace dxvk {
 
   static_assert(std::is_same_v< decltype(RtSurface::objectPickingValue), ObjectPickingValue>);
 
+  void SceneManager::submitWorldAnchoredInstancers(Rc<DxvkContext> ctx) {
+    ScopedCpuProfileZone();
+
+    if (!RtxOptions::enableWorldAnchoredInstancers()) {
+      return;
+    }
+
+    std::vector<const WorldAnchoredInstancerGroup*> groups = m_pReplacer->getWorldAnchoredInstancers();
+    if (groups.empty()) {
+      return;
+    }
+
+    const uint32_t frameId = m_device->getCurrentFrameId();
+    const RtCamera& camera = getCamera();
+    if (!camera.isValid(frameId)) {
+      return;
+    }
+
+    // See the option's own description for why this exists and why it is not a fix.
+    const bool drawUngated = RtxOptions::worldAnchoredInstancersDrawUngated();
+
+    // Identity, because the placements baked into these instancers are already world-space.
+    // buildReplacementMeshDrawCallState multiplies this by the group's own replacementToObject, and the
+    // groups carry no transform of their own, so the per-instance transforms reach the TLAS unmodified.
+    // That is the entire reason the bake resolves world positions up front instead of storing
+    // anchor-relative ones like the authored form does.
+    const Matrix4 objectToWorld;
+
+    static MaterialData s_defaultWorldAnchoredMaterial(LegacyMaterialData::createDefault());
+
+    uint32_t submitted = 0;
+    uint32_t gatedOut = 0;
+    uint32_t untagged = 0;
+
+    for (const WorldAnchoredInstancerGroup* group : groups) {
+      if (group->replacements.empty()) {
+        continue;
+      }
+
+      // An untagged group cannot be scoped to a space. Drawing it anyway is the interior-bleed bug, so
+      // it is refused even in the ungated bring-up mode -- that mode exists to check placement, not to
+      // make unscopeable content appear.
+      if (group->anchorMeshHash == 0) {
+        ++untagged;
+        continue;
+      }
+
+      // The gate: draw this group when the space it was authored in is the space being rendered.
+      //
+      // Two independent tests, because they cover different cases and neither covers both. Anything
+      // painted onto a static passes the first on its own -- statics come from the same source data in
+      // both engines and the host does draw them, so the test is exact and needs no notion of cells.
+      // Anything painted onto captured terrain can only pass the second, because the host builds its own
+      // terrain and those captured hashes are never drawn.
+      //
+      // Neither test refuses a location. Paint in an interior and it anchors to that interior's floor,
+      // which passes the first test while indoors and fails it outdoors. Paint on exterior ground and the
+      // second test admits it only in the cells whose terrain is on screen.
+      const bool anchorDrawnThisFrame = isMeshHashUsedThisFrame(group->anchorMeshHash);
+      const bool cellActiveThisFrame = group->hasCell
+                                       && isTerrainCellActiveThisFrame(group->cellX, group->cellY);
+
+      if (!anchorDrawnThisFrame && !cellActiveThisFrame && !drawUngated) {
+        ++gatedOut;
+        continue;
+      }
+
+      DrawCallState worldDrawCall;
+      {
+        DrawCallTransforms& transforms = worldDrawCall.modifyTransformData();
+        transforms.objectToWorld = objectToWorld;
+        transforms.worldToView = camera.getWorldToViewf();
+        transforms.viewToProjection = camera.getViewToProjectionf();
+        transforms.objectToView = transforms.worldToView;  // objectToWorld is identity
+      }
+
+      // Keyed on the group's USD path hash rather than on its transform or position, which is what the
+      // draw-anchored paths use. Every group here sits at the same identity transform, so a
+      // position-derived key would collide across all of them.
+      const ReplacementInstance::LookupKey key {
+        group->identityHash,
+        group->identityHash,  // its own spatial bucket; these never move, so nothing shares one
+        kEmptyHash,
+        kEmptyHash,
+        Vector3 { 0.0f, 0.0f, 0.0f },
+        objectToWorld
+      };
+
+      ReplacementInstance* replacementInstance = m_drawCallTracker.findOrCreateReplacementInstance(key);
+      if (replacementInstance == nullptr) {
+        continue;
+      }
+
+      const std::vector<AssetReplacement>* pReplacements = &group->replacements;
+
+      // Same preserve-or-rebuild decision the draw-anchored paths make, and for the same reason: the
+      // dynamic path rebuilds each group's acceleration structure, and doing that every frame for two
+      // thousand groups would be far more expensive than the geometry itself.
+      //
+      // Nothing about a world-anchored group changes between frames -- fixed transform, fixed geometry,
+      // fixed material -- so once built it should preserve indefinitely. The conditions below are the
+      // ones that can still legitimately force a rebuild.
+      const bool alreadyWired = replacementInstance->root.getUntyped() != nullptr
+                                && replacementInstance->activeReplacements == pReplacements;
+      const bool secondSubmissionThisFrame = (replacementInstance->frameLastSeen == frameId);
+      const bool cachedTexturesValidForPreserve =
+          m_device->getCommon()->getTextureManager().getTextureCacheGeneration() ==
+          m_textureCacheGenerationValidForPreserve;
+
+      const bool usePreservePath =
+          RtxOptions::enablePreservePath() &&
+          alreadyWired &&
+          replacementInstance->dirtyFlags.isClear() &&
+          !RtxOptionManager::isDrawcallTranslationInvalid() &&
+          !secondSubmissionThisFrame &&
+          cachedTexturesValidForPreserve;
+
+      if (usePreservePath) {
+        preserveReplacementInstance(ctx, worldDrawCall, pReplacements, replacementInstance);
+      } else {
+        if (replacementInstance->activeReplacements != pReplacements) {
+          replacementInstance->clear();
+        }
+        replacementInstance->dirtyFlags.clr(ReplacementInstance::kDynamicFeatureMask);
+        MaterialData renderMaterialData = s_defaultWorldAnchoredMaterial;
+        drawReplacements(ctx, &worldDrawCall, pReplacements, renderMaterialData, replacementInstance);
+      }
+
+      // drawReplacements does not do this, and without it the draw call tracker collects the instance on
+      // a timer and rebuilds it, and never treats it as stable.
+      replacementInstance->frameLastSeen = frameId;
+      ++submitted;
+    }
+
+    // Reported when the figures change, not once and not every frame.
+    //
+    // ONCE was wrong here: the first frame has no terrain drawn yet, so it permanently recorded "0 drawn,
+    // 0 cells live" and could never show either the steady state or what happens on going indoors --
+    // which is the only thing this number is for. Per-frame would be 60 lines a second of mostly
+    // unchanged values. On-change gives one line per transition, which is exactly the interesting event.
+    {
+      static uint32_t s_lastSubmitted = ~0u;
+      static size_t s_lastCells = ~0ull;
+      const size_t liveCells = m_currentFrameTerrainCells.size();
+
+      if (submitted != s_lastSubmitted || liveCells != s_lastCells) {
+        s_lastSubmitted = submitted;
+        s_lastCells = liveCells;
+        Logger::info(str::format(
+            "[RTX Scatter] world-anchored submit: ", submitted, " groups drawn, ", gatedOut,
+            " out of scope, ", untagged, " untagged; ", liveCells, " terrain cells live",
+            drawUngated ? " [UNGATED BRING-UP MODE -- scoping off, expect interior bleed]" : ""));
+      }
+    }
+  }
+
   void SceneManager::submitExternalDraw(const Rc<DxvkContext>& ctx, std::unique_ptr<ExternalDrawState> pstate) {
     ScopedCpuProfileZone();
 
@@ -2895,6 +3060,67 @@ namespace dxvk {
     m_currentFrameReplacementMaterialHashes.clear();
   }
 
+  // Morrowind's exterior cell size in world units. Matches the value the bake tags groups with; if one
+  // changes the other has to.
+  static constexpr float kExteriorCellSize = 8192.0f;
+
+  static inline int32_t worldToCell(float v) {
+    return static_cast<int32_t>(std::floor(v / kExteriorCellSize));
+  }
+
+  static inline uint64_t packCell(int32_t x, int32_t y) {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32) | static_cast<uint32_t>(y);
+  }
+
+  void SceneManager::trackTerrainCell(const DrawCallState& input) {
+    if (!input.testCategoryFlags(InstanceCategories::Terrain)) {
+      return;
+    }
+
+    // Which exterior cells are live is derived from the terrain actually being drawn, rather than from
+    // the camera position or a host-supplied flag.
+    //
+    // That makes it answer the question that matters without being told: an interior draws no exterior
+    // terrain, so no exterior cell is live and exterior groundcover cannot appear inside a building --
+    // which is the bug this exists to prevent, and it cannot be defeated by an interior that happens to
+    // sit at coordinates overlapping the exterior. It equally scopes one town's scatter away from
+    // another's, since only the cells under visible ground are live.
+    //
+    // It is the same principle as gating on the anchor mesh being drawn, generalised to the cell for the
+    // case where the exact mesh cannot be matched because the host generates its own terrain.
+    const Vector3 origin = input.getTransformData().objectToWorld[3].xyz();
+    m_currentFrameTerrainCells.insert(packCell(worldToCell(origin.x), worldToCell(origin.y)));
+  }
+
+  bool SceneManager::isTerrainCellActiveThisFrame(int32_t cellX, int32_t cellY) const {
+    // Is any exterior terrain being drawn at all? This is the test that scopes interiors, and it is the
+    // one that cannot be fooled: an interior draws none, so nothing exterior can appear inside it
+    // regardless of what coordinates that interior happens to occupy.
+    if (m_currentFrameTerrainCells.empty()) {
+      return false;
+    }
+
+    // Then: is this cell near the camera?
+    //
+    // Membership in the drawn-terrain set is deliberately NOT used for the spatial part. Measured, that
+    // set runs to 76-103 cells because distant land is drawn across the whole view distance, while the
+    // authored scatter spans only 10 -- so every group passed, every frame, and one town's groundcover
+    // was being submitted while standing in another. A set that large scopes nothing.
+    //
+    // Distance from the camera is the honest measure of "near you", and it is bounded by the radius the
+    // point instancer culling already uses, so a group admitted here has instances that can actually
+    // survive culling. Anything further away would be submitted, built and then culled on the GPU for
+    // nothing.
+    const Vector3 cameraPos = getCamera().getPosition();
+    const int32_t cameraCellX = worldToCell(cameraPos.x);
+    const int32_t cameraCellY = worldToCell(cameraPos.y);
+
+    // One cell of slack beyond the camera's own, which is 8192 units -- comfortably past the default
+    // culling radius, so this never clips scatter that would have been visible. It also absorbs the case
+    // where the camera sits just inside one cell while looking across the boundary into the next.
+    return std::abs(cellX - cameraCellX) <= 1 && std::abs(cellY - cameraCellY) <= 1;
+  }
+
   void SceneManager::trackMeshHash(XXH64_hash_t meshHash) {
     if (meshHash != kEmptyHash) {
       m_currentFrameMeshHashes[meshHash]++;
@@ -2912,6 +3138,7 @@ namespace dxvk {
 
   void SceneManager::clearFrameMeshHashes() {
     m_currentFrameMeshHashes.clear();
+    m_currentFrameTerrainCells.clear();
   }
 
 }  // namespace dxvk
