@@ -875,7 +875,20 @@ namespace dxvk {
       // alpha-tested mural contributes where its alpha survives and leaves the wall showing where it does
       // not. A texture with no alpha at all would composite as a solid rectangle, which is the honest
       // result of asking for a decal from something that is fully opaque.
-      out.isDecal = drawCall.testCategoryFlags(DECAL_CATEGORY_FLAGS);
+      //
+      // Terrain is excluded, and this is the one exclusion that matters rather than caution.
+      // externalDrawTextureCategories labels every terrain draw DecalStatic when
+      // terrainAsDecalsEnabledIfNoBaker is set, which is a blanket swap applied to the whole chunk -- base
+      // layer included, because a category is all it can see. The blend gate was what kept that harmless:
+      // only the blended overlay layers became decals and the opaque base stayed opaque, so there was solid
+      // ground for them to composite onto. Removing the gate for terrain leaves a stack of decals over
+      // nothing and the land disappears entirely, near and far. The comment at that swap site says as much.
+      //
+      // A user tagging a texture by hand is a different statement from the terrain swap inferring a
+      // category, and only the first is honoured here.
+      if (!drawCall.testCategoryFlags(InstanceCategories::Terrain)) {
+        out.isDecal = drawCall.testCategoryFlags(DECAL_CATEGORY_FLAGS);
+      }
     }
     
     // Set the fully opaque flag
