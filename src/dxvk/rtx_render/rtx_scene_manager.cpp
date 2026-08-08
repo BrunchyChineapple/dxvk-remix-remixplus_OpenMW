@@ -3176,7 +3176,33 @@ namespace dxvk {
 
         fork_hooks::externalDrawMaterialReplacement(*m_pReplacer, material, mergedMaterialData);
 
-        state.drawCall.modifyMaterialData().setHashOverride(material->getHash());
+        // Published as the albedo texture hash, which is what Remix's D3D9 path publishes:
+        // LegacyMaterialData::updateCachedHash is literally colorTextures[0].getImageHash().
+        //
+        // This value is the material's public name. It is what the capturer writes as mat_<hash> --
+        // rtx_game_capturer reads material.getHash(), and already notes it equals the instance's material
+        // hash for D3D9 but differs for API submissions -- and therefore what a pack authored against a
+        // Morrowind capture must match to be reachable in the toolkit at all. Publishing the host's richer
+        // identity instead shared almost no names with such a pack: 2 of 276 material keys in an OpenMW
+        // interior capture were addressable by the pack's 1605, against 131 of 244 for MGE-XE. Nearly
+        // every material replacement in the pack was invisible and uneditable.
+        //
+        // Deliberately not the same change as altering the material's identity, which was tried and
+        // rejected on measurement -- see the note at the host's createTexturedMaterial call. That would key
+        // the runtime's material cache on albedo alone and collapse surfaces differing only in blend or
+        // alpha test onto whichever was created first. This renames only, so the cache stays keyed on the
+        // full identity, every surface state stays distinct, and in-game rendering does not move.
+        // Replacement binding is unaffected either way, since externalDrawMaterialReplacement already
+        // falls back to the albedo hash.
+        //
+        // The cost is capture fidelity: two materials sharing an albedo now occupy one mat_ prim, so
+        // editing it in the toolkit edits both. That is not a new limitation -- it is the one D3D9 has
+        // always had, and the assumption every pack authored against MGE-XE was built on.
+        //
+        // Falls back to the material's own hash when there is no albedo to name it by, so a material with
+        // no colour texture keeps a distinct name instead of collapsing onto zero.
+        state.drawCall.modifyMaterialData().setHashOverride(
+            textureHash != 0 ? textureHash : material->getHash());
 
         fork_hooks::externalDrawTextureCategories(textureHash, state.drawCall);
 
