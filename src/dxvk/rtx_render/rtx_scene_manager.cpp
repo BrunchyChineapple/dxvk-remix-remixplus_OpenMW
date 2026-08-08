@@ -2023,6 +2023,131 @@ namespace dxvk {
       RtxOptions::useAnisotropicFiltering());
   }
 
+  bool SceneManager::applyExternalLightReplacement(RtLight& original) {
+    ScopedCpuProfileZone();
+
+    // Identity and lookup key are built exactly as addLight(const D3DLIGHT9&) builds them, because they
+    // have to name the same ReplacementInstance a capture and the toolkit name.
+    const XXH64_hash_t lightAssetHash = original.getInitialHash();
+    const Vector3 lightPos = original.getPosition();
+    const XXH64_hash_t lightIdHash = XXH64(&lightPos, sizeof(Vector3), lightAssetHash);
+
+    const std::vector<AssetReplacement>* pReplacements = m_pReplacer->getReplacementsForLight(lightAssetHash);
+
+    if (pReplacements == nullptr) {
+      // Nothing authored, or enableReplacementLights was just switched off. The second case has to tear
+      // the instance down rather than simply stop using it: replacement lights are externally tracked and
+      // have no frame-age collection, their lifetime belongs to the instance, so leaving it alone renders
+      // the replacements next to the original that is about to be drawn again.
+      if (ReplacementInstance* stale = m_drawCallTracker.findReplacementInstanceByIdentity(lightIdHash)) {
+        if (stale->activeReplacements != nullptr) {
+          stale->clear();
+        }
+      }
+      return false;
+    }
+
+    // A sphere has no orientation, so the transform a relative replacement is placed by is a pure
+    // translation -- which is also what LightUtils::getLightTransform returns for a D3D9 point light.
+    const Matrix4 lightTransform = Matrix4(lightPos);
+
+    // The original's own shape and radiance, for merging into entries that did not specify them. Taken
+    // from the converted light rather than reconstructed, so a replacement that only overrides intensity
+    // inherits precisely what the host submitted.
+    const float originalRadius = (original.getType() == RtLightType::Sphere)
+        ? original.getSphereLight().getRadius()
+        : 0.0f;
+    const Vector3 originalRadiance = original.getRadiance();
+
+    const ReplacementInstance::LookupKey lightKey {
+      lightIdHash, lightAssetHash, kEmptyHash, kEmptyHash, lightPos, lightTransform
+    };
+    ReplacementInstance* replacementInstance = m_drawCallTracker.findOrCreateReplacementInstance(lightKey);
+
+    // Reinitialise when the prim count stops matching the replacement count, which is how the transition
+    // from unreplaced (one prim) to replaced (N prims) is caught once an async load completes.
+    if (replacementInstance->root.getUntyped() != nullptr
+        && replacementInstance->prims.size() != pReplacements->size()) {
+      replacementInstance->clear();
+    }
+
+    const bool needsBBoxUpdate = replacementInstance->boundingBoxDirty;
+    AxisAlignedBoundingBox litBBox;
+    bool instantiatedAny = false;
+
+    for (size_t i = 0; i < pReplacements->size(); i++) {
+      const auto& replacement = (*pReplacements)[i];
+
+      // Meshes parented to a light are not supported by the runtime on any path -- see TREX-1091 on the
+      // D3D9 equivalent, which asserts here. Skipped rather than asserted, because a pack authored
+      // elsewhere may well contain them and an assert would take a release build down over content.
+      if (replacement.type != AssetReplacement::eLight || !replacement.lightData.has_value()) {
+        continue;
+      }
+
+      LightData replacementLight = replacement.lightData.value();
+
+      // Before the AABB is read, as on the D3D9 path: an entry such as the translated original carries
+      // Unknown type and a zero position until the submitted light has been merged into it.
+      replacementLight.merge(lightPos, originalRadius, originalRadiance);
+
+      RtLight rtReplacementLight = replacementLight.toRtLight();
+
+      if (needsBBoxUpdate) {
+        const Vector3 pos = rtReplacementLight.getPosition();
+        float lightRadius = 0.f;
+        if (rtReplacementLight.getType() == RtLightType::Sphere) {
+          lightRadius = rtReplacementLight.getSphereLight().getRadius();
+        }
+        for (uint32_t j = 0; j < 3; j++) {
+          litBBox.minPos[j] = std::min(litBBox.minPos[j], pos[j] - lightRadius);
+          litBBox.maxPos[j] = std::max(litBBox.maxPos[j], pos[j] + lightRadius);
+        }
+      }
+
+      if (replacementLight.relativeTransform()) {
+        rtReplacementLight.applyTransform(lightTransform);
+      }
+
+      RtLight* existingLight = (replacementInstance->prims.size() > i)
+          ? replacementInstance->prims[i].getLight() : nullptr;
+
+      if (existingLight != nullptr) {
+        m_lightManager.updateExternallyTrackedLight(existingLight, rtReplacementLight);
+        instantiatedAny = true;
+      } else {
+        RtLight* newLight = m_lightManager.createExternallyTrackedLight(rtReplacementLight);
+        if (newLight != nullptr) {
+          if (replacementInstance->prims.empty()) {
+            replacementInstance->setup(PrimInstance(newLight, PrimInstance::Type::Light),
+                pReplacements->size(), pReplacements);
+          }
+          newLight->getPrimInstanceOwner().setReplacementInstance(replacementInstance, i, newLight,
+              PrimInstance::Type::Light);
+          if (replacementInstance->root.getUntyped() == nullptr) {
+            replacementInstance->root = PrimInstance(newLight, PrimInstance::Type::Light);
+          }
+          instantiatedAny = true;
+        }
+      }
+    }
+
+    replacementInstance->frameLastSeen = m_device->getCurrentFrameId();
+    replacementInstance->objectToWorld = lightTransform;
+
+    if (needsBBoxUpdate) {
+      if (litBBox.isValid()) {
+        replacementInstance->lightBoundingBox = litBBox;
+      }
+      replacementInstance->boundingBoxDirty = false;
+    }
+
+    // Only claim the original when something actually stands in for it. A replacement set consisting
+    // solely of unsupported entries would otherwise delete the light from the scene and put nothing in
+    // its place, which reads as "the toolkit made my lamp disappear".
+    return instantiatedAny;
+  }
+
   void SceneManager::addLight(const D3DLIGHT9& light) {
     ScopedCpuProfileZone();
     // Attempt to convert the D3D9 light to RT

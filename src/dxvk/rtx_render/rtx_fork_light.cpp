@@ -19,6 +19,8 @@
 #include "rtx_lights.h"          // RtLight, kInvalidExternallyTrackedLightId
 #include "rtx_options.h"         // RtxOptions::getNumFramesToPutLightsToSleep
 #include "rtx_types.h"           // ReplacementInstance, PrimInstance
+#include "rtx_scene_manager.h"   // SceneManager::applyExternalLightReplacement
+#include "../dxvk_device.h"      // DxvkDevice::getCommon, for reaching the SceneManager
 
 namespace dxvk {
 namespace fork_hooks {
@@ -97,6 +99,34 @@ namespace fork_hooks {
     }
 
     // Note: Do not auto-instance all external lights here; activation is driven by API per-frame
+
+    // Stand replacements in for the lights they replace.
+    //
+    // After both activation loops rather than inside either, because a light can be activated by the
+    // per-frame API call or by being persistent, and both end in this same set. Doing it once here
+    // covers both and cannot disagree with itself.
+    //
+    // Safe to erase from the set while iterating it, because the active list is rebuilt every frame:
+    // this function fills it at the top of prepareSceneData, linearizeLights reads it, and
+    // prepareSceneData clears it at the end. An erase therefore withholds the original for this frame
+    // only, and next frame the same decision is taken again against whatever the pack says then.
+    //
+    // The replacement's own lights are externally tracked and reach the scene through the
+    // ReplacementInstance rather than through this set, which is why removing the handle hides the
+    // original without hiding what replaced it.
+    for (auto it = mgr.m_externalActiveLightList.begin(); it != mgr.m_externalActiveLightList.end();) {
+      auto lightIt = mgr.m_externalLights.find(*it);
+      if (lightIt == mgr.m_externalLights.end()) {
+        ++it;
+        continue;
+      }
+
+      if (mgr.device()->getCommon()->getSceneManager().applyExternalLightReplacement(lightIt->second)) {
+        it = mgr.m_externalActiveLightList.erase(it);
+      } else {
+        ++it;
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------

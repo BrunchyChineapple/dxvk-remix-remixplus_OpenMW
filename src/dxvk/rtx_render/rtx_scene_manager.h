@@ -214,6 +214,18 @@ public:
 
   void addLight(const D3DLIGHT9& light);
 
+  // Applies a light replacement to an externally submitted light, if one is authored for it.
+  //
+  // The replacement path was reachable only from addLight(const D3DLIGHT9&), so a light created
+  // through remixapi_CreateLight never met getReplacementsForLight at all. For an API host that meant
+  // a pack's light_ keys, and any light edited in the toolkit, were visible in a capture and inert in
+  // game -- not because the identity was wrong but because nothing ever looked.
+  //
+  // Returns true when a replacement was instantiated, in which case the caller must not draw the
+  // original: its replacement stands in for it, and drawing both shows the vanilla light alongside
+  // the lights meant to supersede it.
+  bool applyExternalLightReplacement(RtLight& original);
+
   const CameraManager& getCameraManager() const { return m_cameraManager; }
   CameraManager& getCameraManager() { return m_cameraManager; }
   const RtCamera& getCamera() const { return m_cameraManager.getMainCamera(); }
