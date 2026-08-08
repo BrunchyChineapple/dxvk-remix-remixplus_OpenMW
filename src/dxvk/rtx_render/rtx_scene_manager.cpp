@@ -2454,6 +2454,27 @@ namespace dxvk {
       return;
     }
 
+    // These groups are replacement geometry and have to answer to the replacement switches.
+    //
+    // Only their own enable was checked, which left them submitting while replacements were off. That is
+    // wrong on its own terms -- turning replacements off should remove all replacement geometry, and this
+    // is replacement geometry that merely lacks a game draw to hang off -- and it silently ruined every
+    // exterior capture.
+    //
+    // A capture disables replacements first, and GameCapturer refuses to start otherwise, so a capture
+    // should contain the game's own meshes for replacements to be authored against. With this path
+    // unguarded it recorded the scatter instead: 20 Bald Cypress trees at roughly 5.6 million triangles
+    // each, whose parts match the mod's assets exactly -- 2,282,108 triangles for BaldCypress_0/Clovers
+    // and 1,094,010 for BaldCypress_0/mesh_005, both present in the capture under their own hashes at the
+    // same 20 world positions. The engine submitted 3.4-5.9 million triangles for that view; the capture
+    // held 90,296,668, and 56 meshes accounted for 89.9% of them.
+    //
+    // getEnableReplacementMeshes() rather than the individual option, because the individual one is
+    // documented as requiring the global switch to have any effect.
+    if (!RtxOptions::getEnableReplacementMeshes()) {
+      return;
+    }
+
     std::vector<const WorldAnchoredInstancerGroup*> groups = m_pReplacer->getWorldAnchoredInstancers();
     if (groups.empty()) {
       return;
