@@ -2511,6 +2511,31 @@ namespace dxvk {
 
       if (!anchorDrawnThisFrame && !cellActiveThisFrame && !drawUngated) {
         ++gatedOut;
+
+        // Out of scope means "do not draw this", not "destroy this".
+        //
+        // Skipping the group outright also skipped the frameLastSeen refresh below, which is the only
+        // thing keeping its ReplacementInstance out of the collector. So crossing the gate did not merely
+        // stop a draw, it condemned the built geometry -- and it did so for every group crossing at once,
+        // because the gate is driven by which terrain cells are live.
+        //
+        // That is what the GPU faults were. Leaving an area put 1773 groups out of scope in one frame,
+        // garbageCollectReplacementInstances retired all of them a few frames later, and the driver
+        // faulted reading a merged BLAS that had just been destroyed -- Error_DMA_PageFault against
+        // "BLAS Merged", 16 MB to 356 MB, in four separate dumps. Coming back into scope built 1153
+        // groups in a single frame, which is the same burst inverted, and crashed the same way.
+        //
+        // Refreshing the stamp keeps the geometry resident and unsubmitted, so a group crossing the gate
+        // costs a skipped draw and nothing else. Raising rtx.numFramesToKeepBLAS was tried first and did
+        // not help, which fits: a wider window delays a mass destruction without preventing it.
+        //
+        // Nothing is created here. findReplacementInstanceByIdentity never allocates, so a group that has
+        // never been in scope still has no instance and does not get one until it is genuinely drawn --
+        // the whole set is not built up front.
+        if (ReplacementInstance* outOfScope
+            = m_drawCallTracker.findReplacementInstanceByIdentity(group->identityHash)) {
+          outOfScope->frameLastSeen = frameId;
+        }
         continue;
       }
 
