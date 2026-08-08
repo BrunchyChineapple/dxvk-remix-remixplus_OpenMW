@@ -2902,6 +2902,34 @@ namespace dxvk {
       return;
     }
 
+    // Falling through to the ordinary submission has to retire a replacement this instance is still
+    // wired to, or the replacement stays on screen after it stops being wanted.
+    //
+    // The teardown that does this lives inside the branch above, so it was only reachable while a
+    // replacement was being drawn. Every route out of that branch -- the lookup returning nothing because
+    // enhanced meshes were switched off, a hot reload or variant change pointing at a different set --
+    // skipped it, and the loop below only rebinds prims 0 through submeshes.size()-1. A replacement
+    // almost always has more prims than the host mesh has submeshes, so the surplus was left holding
+    // replacement geometry, still submitted, with frameLastSeen refreshed each frame by the instance
+    // being matched, and no material pass ever reaching it again.
+    //
+    // On screen that is a replacement that will not go away, untextured because its material is no longer
+    // resolved, flickering against the original mesh now drawn underneath it. It selects for multi-part
+    // assets: a single-submesh object's replacement occupies prim 0 and gets overwritten below, which is
+    // why simple objects reverted correctly and trees and doors did not. The D3D9 path cannot reach this
+    // because its equivalent null case is an else branch that clears first.
+    //
+    // Conditioned on activeReplacements being non-null rather than on a plain mismatch, because the
+    // deferral above also lands here. A first sighting waiting on the build budget has replacements
+    // pending but none attached, and clearing it every frame would destroy and rebuild the original
+    // geometry's prims for as long as it waited -- the same wire, clear, rebuild churn described above.
+    // Non-null means drawReplacements actually ran and there is replacement state to retire. clear()
+    // resets the pointer, so this fires once per transition rather than every frame.
+    if (replacementInstance->activeReplacements != nullptr
+        && replacementInstance->activeReplacements != pReplacements) {
+      replacementInstance->clear();
+    }
+
     AxisAlignedBoundingBox geometryBBox;
 
     for (size_t i = 0; i < submeshes.size(); i++) {
