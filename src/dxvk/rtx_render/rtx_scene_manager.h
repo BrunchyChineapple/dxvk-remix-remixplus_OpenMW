@@ -464,6 +464,12 @@ private:
   uint64_t m_externalReplacementDeferrals = 0;
   uint64_t m_externalReplacementDeferralsLogged = 0;
 
+  // The same pacing for world-anchored groups. A plain counter rather than a set of admitted hashes,
+  // because each group is visited at most once per frame and builds its own geometry, so there is no
+  // second instance of a group to let through. See the use site in submitWorldAnchoredInstancers.
+  uint32_t m_worldAnchoredBuildFrame = ~0u;
+  uint32_t m_worldAnchoredBuildsThisFrame = 0;
+
   // Replacement material hash tracking for current frame (hash -> count)
   std::unordered_map<XXH64_hash_t, uint32_t> m_currentFrameReplacementMaterialHashes;
 

@@ -490,7 +490,15 @@ namespace dxvk {
     RTX_OPTION("rtx", bool, resolvePreCombinedMatrices, true, "");
 
     RTX_OPTION("rtx", uint32_t, minPrimsInDynamicBLAS, 1000, "The minimum number of triangles required to promote a mesh to it's own BLAS, otherwise it lands in the merged BLAS with multiple other meshes.");
-    RTX_OPTION("rtx", uint32_t, maxExternalReplacementBuildsPerFrame, 0,
+    // Defaulted on rather than off, because 0 means no limit and left this inert.
+    //
+    // This exists because a few hundred first-time builds in one frame stalled the GPU for 19 seconds
+    // and lost the device to a driver reset. Shipping the mechanism disabled meant the crash it was
+    // written for was still reachable out of the box, and reachable in exactly the situation a player
+    // hits without doing anything unusual -- walking into a town.
+    //
+    // 32 fills the worst cell measured here, Ald'ruhn at 197 distinct replacements, in about six frames.
+    RTX_OPTION("rtx", uint32_t, maxExternalReplacementBuildsPerFrame, 32,
                "How many distinct API-submitted meshes may build a replacement for the first time in one\n"
                "frame. Counted per mesh, not per instance: further instances of a mesh already admitted\n"
                "this frame pass freely, because they reuse its acceleration structure.\n"
@@ -1219,6 +1227,16 @@ namespace dxvk {
                "Such geometry is needed when the surface it was authored against is not a mesh this game\n"
                "draws -- scatter painted onto captured terrain, where the host generates its own terrain\n"
                "and never produces the captured mesh hashes.");
+    RTX_OPTION("rtx", uint32_t, maxWorldAnchoredInstancerBuildsPerFrame, 32,
+               "How many world-anchored groups may build for the first time in one frame.\n"
+               "The same pacing maxExternalReplacementBuildsPerFrame applies to API-submitted meshes,\n"
+               "for the same reason and against a larger set: this scatter is 2052 groups, and 1153 of\n"
+               "them building in a single frame faulted the driver.\n"
+               "Unlike an API draw, a deferred group has no original geometry to fall back on -- it is\n"
+               "replacement-only -- so it simply does not draw until its turn comes. Groundcover\n"
+               "therefore fills in over a fraction of a second after a mass rebuild, which is only\n"
+               "triggered by switching enhanced meshes back on, a mod reload, or startup.\n"
+               "0 removes the limit.");
     RTX_OPTION("rtx", bool, worldAnchoredInstancersDrawUngated, false,
                "BRING-UP ONLY. Draws every world-anchored group regardless of whether the space it was\n"
                "authored in is the space currently being rendered.\n"

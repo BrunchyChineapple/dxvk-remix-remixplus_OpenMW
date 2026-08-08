@@ -2501,6 +2501,7 @@ namespace dxvk {
     uint32_t submitted = 0;
     uint32_t gatedOut = 0;
     uint32_t untagged = 0;
+    uint32_t deferred = 0;
 
     for (const WorldAnchoredInstancerGroup* group : groups) {
       if (group->replacements.empty()) {
@@ -2610,6 +2611,38 @@ namespace dxvk {
           !secondSubmissionThisFrame &&
           cachedTexturesValidForPreserve;
 
+      // Ration first builds across frames, the same way submitExternalDraw does and for the same reason.
+      //
+      // The refresh above stops the gate from condemning groups, so scope transitions no longer destroy
+      // anything. It does nothing for the opposite direction: any event that invalidates the whole set at
+      // once still puts every rebuild in one frame. Switching enhanced meshes back on does that, a mod
+      // reload does it, and so does startup. 1153 groups building in a single frame is what faulted the
+      // driver, and that number came from this path.
+      //
+      // Only first builds are paced. A group that is merely being re-preserved costs nothing, and a group
+      // already wired is not rebuilt here at all.
+      //
+      // A deferred group is not drawn this frame. There is nothing else it could draw -- unlike an API
+      // mesh, which falls back to its own geometry -- so groundcover appears over the following frames
+      // instead of all at once. frameLastSeen still has to be refreshed or the collector retires the
+      // instance before its turn arrives, which would restart the build on a fresh instance every frame
+      // and never finish.
+      if (!usePreservePath && !alreadyWired) {
+        if (m_worldAnchoredBuildFrame != frameId) {
+          m_worldAnchoredBuildFrame = frameId;
+          m_worldAnchoredBuildsThisFrame = 0;
+        }
+
+        const uint32_t buildBudget = RtxOptions::maxWorldAnchoredInstancerBuildsPerFrame();
+        if (buildBudget != 0 && m_worldAnchoredBuildsThisFrame >= buildBudget) {
+          replacementInstance->frameLastSeen = frameId;
+          ++deferred;
+          continue;
+        }
+
+        ++m_worldAnchoredBuildsThisFrame;
+      }
+
       if (usePreservePath) {
         preserveReplacementInstance(ctx, worldDrawCall, pReplacements, replacementInstance);
       } else {
@@ -2636,14 +2669,17 @@ namespace dxvk {
     {
       static uint32_t s_lastSubmitted = ~0u;
       static size_t s_lastCells = ~0ull;
+      static uint32_t s_lastDeferred = ~0u;
       const size_t liveCells = m_currentFrameTerrainCells.size();
 
-      if (submitted != s_lastSubmitted || liveCells != s_lastCells) {
+      if (submitted != s_lastSubmitted || liveCells != s_lastCells || deferred != s_lastDeferred) {
         s_lastSubmitted = submitted;
         s_lastCells = liveCells;
+        s_lastDeferred = deferred;
         Logger::info(str::format(
             "[RTX Scatter] world-anchored submit: ", submitted, " groups drawn, ", gatedOut,
-            " out of scope, ", untagged, " untagged; ", liveCells, " terrain cells live",
+            " out of scope, ", untagged, " untagged, ", deferred, " build deferred; ",
+            liveCells, " terrain cells live",
             drawUngated ? " [UNGATED BRING-UP MODE -- scoping off, expect interior bleed]" : ""));
       }
     }
