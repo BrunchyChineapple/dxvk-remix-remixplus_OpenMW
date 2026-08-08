@@ -156,6 +156,47 @@ namespace dxvk {
     return m_ConeAngleRadians != (180.f * kDegreesToRadians) || m_ConeSoftness != 0.0f || m_Focus != 0.0f;
   }
 
+  LightData LightData::createFromSphere(const Vector3& position, float radius, const Vector3& radiance) {
+    auto output = LightData{ Sphere };
+
+    output.m_position = position;
+    output.m_Radius = radius;
+
+    // Radiance is split the way createFromPointSpot splits a D3D9 diffuse colour, because
+    // calculateRadiance multiplies the two back together: m_Color * m_Intensity * pow(2, m_Exposure)
+    // * temperature. Exposure defaults to 0 and colour temperature is off by default, so a normalised
+    // colour and the brightest component as intensity reproduce the submitted radiance exactly rather
+    // than approximately.
+    //
+    // A black light keeps the default white colour instead of dividing by zero. Its intensity stays 0,
+    // so it contributes nothing either way, and leaving the colour finite keeps it from poisoning a
+    // merge that reads the colour but overrides the intensity.
+    const float brightest = std::max(radiance.x, std::max(radiance.y, radiance.z));
+    if (brightest > 0.f) {
+      output.m_Color = radiance / brightest;
+      output.m_Intensity = brightest;
+    } else {
+      output.m_Intensity = 0.f;
+    }
+
+    return output;
+  }
+
+  void LightData::merge(const Vector3& position, float radius, const Vector3& radiance) {
+    // Same two steps as merge(const D3DLIGHT9&), and skipped for the same reason: a replacement that
+    // specified every parameter has nothing to take from the original light.
+    if (m_dirty != m_allDirty) {
+      merge(createFromSphere(position, radius, radiance));
+    }
+
+    // An override authored against a light without naming its type leaves this Unknown, and the
+    // submitted light is always a sphere on this path -- createSphereLight is the only entry point
+    // that reaches it.
+    if (m_lightType == LightType::Unknown) {
+      m_lightType = LightType::Sphere;
+    }
+  }
+
   void LightData::merge(const LightData& input) {
     LIST_LIGHT_CONSTANTS(WRITE_PARAMETER_MERGE);
 

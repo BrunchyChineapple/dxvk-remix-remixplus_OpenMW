@@ -60,6 +60,21 @@ namespace dxvk {
 
     void merge(const D3DLIGHT9& light);
 
+    // Merges an externally submitted sphere light into this replacement, as merge(const D3DLIGHT9&)
+    // does for a legacy light.
+    //
+    // Exists because light replacements were reachable only from the D3D9 path. A light submitted
+    // through remixapi_CreateLight never met getReplacementsForLight, so a pack's light_ keys and any
+    // light edited in the toolkit simply had no effect for an API host -- visible in the capture,
+    // editable there, and inert in game.
+    //
+    // Takes the already-converted sphere rather than a synthesised D3DLIGHT9 on purpose. Routing
+    // through tryCreate(const D3DLIGHT9&) would re-derive radius from
+    // lightConversionSphereLightFixedRadius and intensity from LightUtils::calculateIntensity,
+    // discarding the radiance the host computed from its own attenuation curve -- which for OpenMW is
+    // the difference between a candle and a floodlight.
+    void merge(const Vector3& position, float radius, const Vector3& radiance);
+
     static bool isSupportedUsdLight(const pxr::UsdPrim& lightPrim);
 
     // Do we transform this light relative to a game light?
@@ -87,6 +102,7 @@ namespace dxvk {
 
     static LightData createFromDirectional(const D3DLIGHT9& light);
     static LightData createFromPointSpot(const D3DLIGHT9& light);
+    static LightData createFromSphere(const Vector3& position, float radius, const Vector3& radiance);
 
     void merge(const LightData& input);
 
