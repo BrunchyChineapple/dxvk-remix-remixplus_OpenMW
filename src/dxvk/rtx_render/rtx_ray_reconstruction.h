@@ -76,6 +76,16 @@ namespace dxvk {
                "Path tracer preset to use when Ray Reconstruction is enabled.");
     RTX_OPTION("rtx.rayreconstruction", bool, useSpecularHitDistance, true, "Use specular hit distance to reduce ghosting.\n");
     RTX_OPTION("rtx.rayreconstruction", bool, preserveSettingsInNativeMode, false, "Preserve settings when switched to native mode, otherwise the default preset will be applied.\n");
+    RTX_OPTION("rtx.rayreconstruction", bool, preserveSettingsWithRayReconstruction, false,
+               "Preserve the configured path tracer settings while Ray Reconstruction is enabled, instead of applying rtx.rayreconstruction.pathTracerPreset.\n"
+               "\n"
+               "The counterpart of preserveSettingsInNativeMode for the Ray Reconstruction path. Without it, a value set in rtx.conf or user.conf for any option the\n"
+               "preset touches cannot survive: updatePathTracerPreset() writes about fifteen RTXDI, ReSTIR GI, integrator, NEE cache, demodulate and composite options\n"
+               "on every lighting update, and those options carry the UserSetting flag, so with a Custom graphics preset the write lands in the User Settings layer --\n"
+               "the same layer user.conf occupies -- and is then persisted back to that file. The configured value is not merely ignored, it is overwritten on disk.\n"
+               "\n"
+               "The preset's values are tuned for Ray Reconstruction's denoiser and are a reasonable default, which is why this is off unless asked for. Enable it when\n"
+               "the sampling settings are being chosen deliberately, for instance to match another project's tuning, and expect a frame time cost from raising them.\n");
     RTX_OPTION("rtx.rayreconstruction", bool, combineSpecularAlbedo, true, "Combine primary and secondary specular albedo to improve DLSS-RR reflection quality.\n");
     RTX_OPTION("rtx.rayreconstruction", bool, enableDetailEnhancement, true, "Enable detail enhancement filter to enhance normal map details.\n");
     RTX_OPTION("rtx.rayreconstruction", bool, demodulateRoughness, true, "Demodulate roughness to enhance roughness details.\n");

@@ -385,7 +385,20 @@ namespace dxvk {
     bool isDLSS = RtxOptions::isDLSSEnabled();
     bool isNative = RtxOptions::upscalerType() == UpscalerType::None;
     if (isRayReconstruction) {
-      updatePathTracerPreset(DxvkRayReconstruction::pathTracerPreset());
+      // Skipped when the settings are being chosen deliberately rather than taken from the preset.
+      //
+      // This branch is why a value set in rtx.conf or user.conf for any option the preset touches
+      // could not be made to stick. The options it writes carry the UserSetting flag, and with a
+      // Custom graphics preset a code-driven write to a UserSetting option is routed to the User
+      // Settings layer -- the layer user.conf occupies -- so the preset overwrote the configured
+      // value and then saved its own over it. rtx.di.initialSampleCount is the clearest case: set to
+      // 64, it came back as 3, which is not only the preset's value but below the option's own
+      // default of 4.
+      //
+      // Mirrors preserveSettingsInNativeMode below rather than introducing a second mechanism.
+      if (!DxvkRayReconstruction::preserveSettingsWithRayReconstruction()) {
+        updatePathTracerPreset(DxvkRayReconstruction::pathTracerPreset());
+      }
     } else if (isDLSS) {
       updatePathTracerPreset(PathTracerPreset::Default);
     } else if (isNative) {
