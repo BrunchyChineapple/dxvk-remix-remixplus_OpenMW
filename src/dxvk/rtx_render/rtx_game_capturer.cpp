@@ -159,8 +159,26 @@ namespace dxvk {
     if (m_bTriggerCapture) {
       m_bTriggerCapture = false;
       if(isIdle()) {
-        if (RtxOptions::getEnableAnyReplacements() && m_sceneManager.areAllReplacementsLoaded()) {
-          Logger::warn("[GameCapturer] Cannot begin capture when replacement assets are enabled/loaded.");
+        // Enabled is the whole test. Whether the assets finished loading is not.
+        //
+        // This was an && against areAllReplacementsLoaded(), so a capture went ahead whenever loading had
+        // not completed -- which, with a large replacement library, is the ordinary state. The guard
+        // therefore almost never fired, and the message's own "enabled/loaded" says the intent was either
+        // condition rather than both.
+        //
+        // What that cost: an exterior capture taken with replacements live recorded the replacements
+        // instead of the game's meshes. The engine submitted 3.4-5.9 million triangles for the view and
+        // the capture held 94,970,368, with 56 meshes accounting for 89.9% of them -- among them a Bald
+        // Cypress at roughly 5.6 million triangles across its parts, matching the mod's assets exactly.
+        // Such a capture is useless for its purpose as well as unloadable: replacements are authored
+        // against captured game geometry, so capturing the replacements makes the reference circular.
+        //
+        // Not || either. Assets that are loaded while replacements are switched off are not in the scene,
+        // and refusing then would block a capture that would have been correct.
+        if (RtxOptions::getEnableAnyReplacements()) {
+          Logger::warn("[GameCapturer] Cannot begin capture while replacement assets are enabled. "
+                       "Disable rtx.enableReplacementAssets and capture again -- a capture records the "
+                       "game's own geometry, which is what replacements are authored against.");
         } else if (m_state.has<State::Capturing>()) {
           Logger::warn("[GameCapturer] Cannot begin new capture, one currently in progress.");
         } else {
