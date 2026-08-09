@@ -107,11 +107,31 @@ struct VolumeArgs {
   // Was a hardcoded 0.0 ("kConsumerMultiplier") that left alpha-blended
   // particles unlit.
   float volumetricConsumerGain;
-  // Pad the merged (upstream + fork) tail back to a 16-byte boundary so the
-  // shared C++/shader CB layout keeps sizeof(VolumeArgs) % 16 == 0.
-  uint pad1;
-  uint pad2;
-  uint pad3;
+  // Underwater fog gain split (fork — Morrowind). The above-water
+  // fogSunVisibilityGain blows the fog below the water surface into a white wall
+  // when viewed from shore. enableWaterFogSplit picks
+  // fogSunVisibilityGainUnderwater for froxels whose altitude
+  // (dot(worldPos, sceneUpDirection)) is below waterPlaneAltitude, and the
+  // above-water fogSunVisibilityGain for froxels above it. The water plane
+  // (world-unit altitude) is published by the host each frame via
+  // rtx.volumetrics.waterPlaneWorldZ.
+  float fogSunVisibilityGainUnderwater;
+  float waterPlaneAltitude;  // world-unit altitude of the water surface along sceneUpDirection
+  uint enableWaterFogSplit;  // 0 = off (whole-volume fogSunVisibilityGain), 1 = spatial split
+  // Underwater ABSOLUTE fog density (fork — Morrowind). Froxels below the water
+  // plane (selected by the SAME altitude-vs-waterPlaneAltitude test as the gain
+  // split above, gated by enableWaterFogSplit) use these color-independent
+  // extinction/scattering coefficients INSTEAD of the above-water
+  // attenuationCoefficient / scatteringCoefficient, so underwater fog stays murky
+  // even in clear weather. Their sigma_t is derived CPU-side from a per-weather
+  // underwater reference transmittance, NOT as a scale of the above-water sigma_t
+  // (which is ~0 in clear weather, so N x ~0 = ~0).
+  // Each vec3 sits on a 16-byte boundary with a trailing pad word, matching this
+  // struct's packing convention, so sizeof(VolumeArgs) % 16 == 0 still holds.
+  vec3 underwaterAttenuationCoefficient;
+  float padUnderwaterFog0;
+  vec3 underwaterScatteringCoefficient;
+  float padUnderwaterFog1;
 };
 
 #ifdef __cplusplus

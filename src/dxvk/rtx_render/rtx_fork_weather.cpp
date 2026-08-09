@@ -789,6 +789,13 @@ namespace dxvk { namespace fork_weather { namespace {
     // Volumetric (27) — class is RtxGlobalVolumetrics
     s.transmittanceColor                     = RtxGlobalVolumetrics::transmittanceColor();
     s.transmittanceMeasurementDistanceMeters = RtxGlobalVolumetrics::transmittanceMeasurementDistanceMeters();
+    // Fog density decoupling (fork): the live renderer holds ONE above-water and ONE underwater
+    // reference transmittance (already collapsed by sun elevation on write); seed both Day and Night
+    // snapshot fields from the same live value so a snapshot-from-live round-trips.
+    s.fogDensityReferenceTransmittanceDay   = RtxGlobalVolumetrics::fogDensityReferenceTransmittance();
+    s.fogDensityReferenceTransmittanceNight = RtxGlobalVolumetrics::fogDensityReferenceTransmittance();
+    s.fogDensityReferenceTransmittanceUnderwaterDay   = RtxGlobalVolumetrics::fogDensityReferenceTransmittanceUnderwater();
+    s.fogDensityReferenceTransmittanceUnderwaterNight = RtxGlobalVolumetrics::fogDensityReferenceTransmittanceUnderwater();
     s.singleScatteringAlbedo                 = RtxGlobalVolumetrics::singleScatteringAlbedo();
     s.volumetricAnisotropy                   = RtxGlobalVolumetrics::anisotropy();
     // Volumetric appearance (fork - full set)
@@ -936,6 +943,25 @@ namespace dxvk { namespace fork_weather { namespace {
     // Volumetric (27) — class is RtxGlobalVolumetrics
     RtxGlobalVolumetrics::transmittanceColorObject().setImmediately(interp.transmittanceColor);
     RtxGlobalVolumetrics::transmittanceMeasurementDistanceMetersObject().setImmediately(interp.transmittanceMeasurementDistanceMeters);
+    // Time-of-day fog density (fork): collapse the per-weather Day/Night reference transmittance by
+    // sun elevation (deg above horizon). Night at/below -5 deg, full day at/above +10 deg, smooth
+    // twilight blend between. sunElevation is game-driven (rtx.atmosphere.sunElevation, NoSave).
+    {
+      const float sunElevDeg = RtxOptions::sunElevation();
+      const float todDayFactor = saturate((sunElevDeg + 5.0f) / 15.0f);
+      const float collapsedFogDensityRefT = lerp(interp.fogDensityReferenceTransmittanceNight,
+                                                 interp.fogDensityReferenceTransmittanceDay, todDayFactor);
+      RtxGlobalVolumetrics::fogDensityReferenceTransmittanceObject().setImmediately(collapsedFogDensityRefT);
+    }
+    // Per-weather underwater fog density with its OWN Day/Night split, same collapse curve. Written to
+    // its own global Derived layer; the shader selects it per-froxel below the water plane.
+    {
+      const float sunElevDegUw = RtxOptions::sunElevation();
+      const float todDayFactorUw = saturate((sunElevDegUw + 5.0f) / 15.0f);
+      const float collapsedFogDensityRefTUw = lerp(interp.fogDensityReferenceTransmittanceUnderwaterNight,
+                                                   interp.fogDensityReferenceTransmittanceUnderwaterDay, todDayFactorUw);
+      RtxGlobalVolumetrics::fogDensityReferenceTransmittanceUnderwaterObject().setImmediately(collapsedFogDensityRefTUw);
+    }
     RtxGlobalVolumetrics::singleScatteringAlbedoObject().setImmediately(interp.singleScatteringAlbedo);
     RtxGlobalVolumetrics::anisotropyObject().setImmediately(interp.volumetricAnisotropy);
     // Volumetric appearance (fork - full set)

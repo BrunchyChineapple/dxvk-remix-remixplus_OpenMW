@@ -1,10 +1,10 @@
 #pragma once
 
 // rtx_fork_weather.h — fork-owned weather preset declarations.
-// Defines 756 RTX_OPTIONs (12 presets x 63 fields) under the
+// Defines 804 RTX_OPTIONs (12 presets x 67 fields) under the
 // rtx.weather.preset.<presetName> namespace.
 //
-// Field bucket breakdown: 17 cloud + 5 atmosphere + 4 sky/moon mood + 26 volumetric
+// Field bucket breakdown: 17 cloud + 5 atmosphere + 4 sky/moon mood + 30 volumetric
 // + 11 precipitation.
 //
 // Usage: invoke DECLARE_ALL_WEATHER_PRESETS() inside the RtxOptions struct body
@@ -43,8 +43,8 @@ namespace dxvk { namespace fork_weather {
 } }
 
 // ---------------------------------------------------------------------------
-// Field table X-macro - THE single source of truth for the 63 weather fields
-// (17 cloud + 5 atmosphere + 4 sky/moon mood + 27 volumetric + 11 precipitation).
+// Field table X-macro - THE single source of truth for the 67 weather fields
+// (17 cloud + 5 atmosphere + 4 sky/moon mood + 30 volumetric + 11 precipitation).
 // Every consumer
 // (WeatherSnapshot members, the per-field descriptor table, the generated
 // ImGui panel, and the blend/read/write loops) is driven from here, so a field
@@ -94,7 +94,7 @@ namespace dxvk { namespace fork_weather {
   X(Vector3, nightSkyColor,                      Vector3(0.15f, 0.2f, 0.4f),      WK_Color,      "Sky & Moon",     "Sky & Moon",       "Night Sky Color",            0.0f,    1.0f,    0.005f,  "%.3f") \
   X(float,   moonNeeStrength,                    1.0f,                            WK_Scalar,     "Sky & Moon",     "Sky & Moon",       "NEE Strength",               0.0f,    10.0f,   0.05f,   "%.2f") \
   X(float,   moonAtmosphericCouplingStrength,    1.0f,                            WK_Scalar,     "Sky & Moon",     "Sky & Moon",       "Atmospheric Coupling",       0.0f,    10.0f,   0.05f,   "%.2f") \
-  /* Volumetric (27); volumetricAnisotropy avoids clash with the old cloudAnisotropy */ \
+  /* Volumetric (30); volumetricAnisotropy avoids clash with the old cloudAnisotropy */ \
   X(Vector3, transmittanceColor,                 Vector3(0.999f, 0.999f, 0.999f), WK_Color,      "Volumetric Fog", "Medium",           "Transmittance Color",        0.0f,    1.0f,    0.005f,  "%.3f") \
   X(float,   transmittanceMeasurementDistanceMeters, 200.0f,                      WK_Extinction, "Volumetric Fog", "Medium",           "Transmittance Measurement Distance", 1.0f, 2000.0f, 5.0f,  "%.0f") \
   X(Vector3, singleScatteringAlbedo,             Vector3(0.999f, 0.999f, 0.999f), WK_Color,      "Volumetric Fog", "Medium",           "Single Scattering Albedo",   0.0f,    1.0f,    0.005f,  "%.3f") \
@@ -121,6 +121,11 @@ namespace dxvk { namespace fork_weather {
   X(bool,  enableTranslucentShadows, false, WK_Step,   "Volumetric Fog", "Medium",        "Enable Translucent Shadows", 0.0f, 1.0f,  1.0f,  "%.0f") \
   X(float, depthOffset,              0.5f,  WK_Scalar, "Volumetric Fog", "Medium",        "Depth Offset",        0.0f, 1.0f,  0.01f, "%.2f") \
   X(float, noiseFieldOctaves,        2.0f,  WK_Scalar, "Volumetric Fog", "Heterogeneous", "Noise Field Number of Octaves", 1.0f, 8.0f,  1.0f,  "%.0f") \
+  /* Fog density decoupling (fork — day/night + underwater split, collapsed by sun elevation in applyBlendedValues) */ \
+  X(float,   fogDensityReferenceTransmittanceDay,             0.70f, WK_Scalar, "Volumetric Fog", "Medium", "Fog Density Ref T (Day)",              0.004f, 0.996f, 0.005f, "%.3f") \
+  X(float,   fogDensityReferenceTransmittanceNight,           0.85f, WK_Scalar, "Volumetric Fog", "Medium", "Fog Density Ref T (Night)",            0.004f, 0.996f, 0.005f, "%.3f") \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.40f, WK_Scalar, "Volumetric Fog", "Medium", "Fog Density Ref T (Underwater Day)",   0.004f, 0.996f, 0.005f, "%.3f") \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.40f, WK_Scalar, "Volumetric Fog", "Medium", "Fog Density Ref T (Underwater Night)", 0.004f, 0.996f, 0.005f, "%.3f") \
   X(float,   volumetricAnisotropy,               0.0f,                            WK_Scalar,     "Volumetric Fog", "Medium",           "Anisotropy",                -1.0f,    1.0f,    0.01f,   "%.2f") \
   /* Precipitation (10) — rain / snow / blowing sand particles. Drives the       */ \
   /* rtx.weather.precipitation.* live options consumed by PrecipitationSystem    */ \
@@ -172,7 +177,7 @@ namespace dxvk { namespace fork_weather {
 #define WEATHER_PRESET_BIND_smoggy(type, name, def)        WEATHER_PRESET_RTX_OPTION_FOR(smoggy,        type, name, def);
 
 // ---------------------------------------------------------------------------
-// Per-preset value X-macros — one per archetype, 63 fields each, in the same
+// Per-preset value X-macros — one per archetype, 67 fields each, in the same
 // order as WEATHER_PRESET_FIELD_LIST. Fields not explicitly tuned use the
 // neutral default from WEATHER_PRESET_FIELD_LIST, which is also the canonical
 // field order — see that macro above rather than duplicating the list here.
@@ -232,6 +237,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.0f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.80f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.945f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.35f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.35f) \
   /* Precipitation - no precipitation */ \
   X(float,   precipitationIntensity,    0.0f                        ) \
   X(float,   precipitationFallSpeed,    8.0f                        ) \
@@ -299,6 +308,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.05f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.72f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.94f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.33f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.33f) \
   /* Precipitation - no precipitation */ \
   X(float,   precipitationIntensity,    0.0f                        ) \
   X(float,   precipitationFallSpeed,    8.0f                        ) \
@@ -366,6 +379,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.05f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.55f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.80f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.30f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.30f) \
   /* Precipitation - no precipitation (dry overcast) */ \
   X(float,   precipitationIntensity,    0.0f                        ) \
   X(float,   precipitationFallSpeed,    8.0f                        ) \
@@ -433,6 +450,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.30f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.65f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.85f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.32f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.32f) \
   /* Precipitation - no precipitation */ \
   X(float,   precipitationIntensity,    0.0f                        ) \
   X(float,   precipitationFallSpeed,    8.0f                        ) \
@@ -500,6 +521,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.0f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.40f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.89f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.22f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.22f) \
   /* Precipitation - barely-there mist drift, mostly there to make the fog feel wet */ \
   X(float,   precipitationIntensity,    0.06f                       ) \
   X(float,   precipitationFallSpeed,    3.0f                        ) \
@@ -567,6 +592,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.10f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.55f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.70f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.28f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.28f) \
   /* Precipitation - fine, slow, short streaks */ \
   X(float,   precipitationIntensity,    0.28f                       ) \
   X(float,   precipitationFallSpeed,    5.5f                        ) \
@@ -634,6 +663,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.10f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.55f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.95f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.25f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.25f) \
   /* Precipitation - heavy, fast, long slanted streaks */ \
   X(float,   precipitationIntensity,    0.80f                       ) \
   X(float,   precipitationFallSpeed,    9.5f                        ) \
@@ -703,6 +736,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.0f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.50f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.89f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.22f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.22f) \
   /* Precipitation - torrential; the streaks are the storm */ \
   X(float,   precipitationIntensity,    1.00f                       ) \
   X(float,   precipitationFallSpeed,    11.0f                       ) \
@@ -770,6 +807,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.0f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.55f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.70f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.30f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.30f) \
   /* Precipitation - slow tumbling flakes - no streak, high drag + turbulence is what makes them flutter */ \
   X(float,   precipitationIntensity,    0.45f                       ) \
   X(float,   precipitationFallSpeed,    1.1f                        ) \
@@ -837,6 +878,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.0f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.40f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.45f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.20f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.20f) \
   /* Precipitation - driven snow: wind dominates the fall direction */ \
   X(float,   precipitationIntensity,    1.00f                       ) \
   X(float,   precipitationFallSpeed,    2.2f                        ) \
@@ -904,6 +949,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.60f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.45f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.50f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.25f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.25f) \
   /* Precipitation - blowing grit - almost horizontal, tinted, semi-transparent */ \
   X(float,   precipitationIntensity,    0.85f                       ) \
   X(float,   precipitationFallSpeed,    1.6f                        ) \
@@ -971,6 +1020,10 @@ namespace dxvk { namespace fork_weather {
   X(float, depthOffset,              0.5f) \
   X(float, noiseFieldOctaves,        2.0f) \
   X(float,   volumetricAnisotropy,                      0.20f) \
+  X(float,   fogDensityReferenceTransmittanceDay,       0.50f) \
+  X(float,   fogDensityReferenceTransmittanceNight,     0.60f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.25f) \
+  X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.25f) \
   /* Precipitation - no precipitation */ \
   X(float,   precipitationIntensity,    0.0f                        ) \
   X(float,   precipitationFallSpeed,    8.0f                        ) \
@@ -986,15 +1039,15 @@ namespace dxvk { namespace fork_weather {
 
 // ---------------------------------------------------------------------------
 // Single-preset macro. Walks WEATHER_PRESET_VALUES_<N> via the binder for
-// preset N, emitting all 63 RTX_OPTION declarations with archetype-tuned
+// preset N, emitting all 67 RTX_OPTION declarations with archetype-tuned
 // defaults. Must be invoked inside a class body (RTX_OPTION declares inline
 // static members).
 // ---------------------------------------------------------------------------
 #define DECLARE_WEATHER_PRESET(N) WEATHER_PRESET_VALUES_##N(WEATHER_PRESET_BIND_##N)
 
 // ---------------------------------------------------------------------------
-// Umbrella macro. Invoke inside RtxOptions struct body to declare all 756
-// RTX_OPTIONs (12 presets x 63 fields).
+// Umbrella macro. Invoke inside RtxOptions struct body to declare all 804
+// RTX_OPTIONs (12 presets x 67 fields).
 // ---------------------------------------------------------------------------
 #define DECLARE_ALL_WEATHER_PRESETS()   \
   DECLARE_WEATHER_PRESET(clear)         \
@@ -1021,7 +1074,7 @@ namespace dxvk { namespace fork_weather {
 namespace dxvk { namespace fork_weather {
 
   // -------------------------------------------------------------------------
-  // WeatherSnapshot — a plain-value copy of all 63 renderer weather params.
+  // WeatherSnapshot — a plain-value copy of all 67 renderer weather params.
   // Members are auto-generated from the single-source-of-truth X-macro so
   // that any field addition automatically propagates here.
   // -------------------------------------------------------------------------

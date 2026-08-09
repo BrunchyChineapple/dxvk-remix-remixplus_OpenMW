@@ -168,6 +168,14 @@ namespace dxvk {
                     "GTA IV) restores atmospheric tint on smoke/dust without obvious leaking. Set to "
                     "0.0 to fully disable (the prior hardcoded behavior) if a game shows false glow.",
                     args.minValue = 0.0f, args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.volumetrics", float, fogSunVisibilityGainUnderwater, 0.0f,
+               "Fork (Morrowind): the sun in-scatter gain applied to fog BELOW the water surface (spatial split, see enableWaterFogGainSplit). Standing on shore, the above-water fogSunVisibilityGain blows the fog seen through/under the water into a white wall; this tames it independently (default 0) while the above-water gain is raised for sun shafts. Selected per-froxel by world altitude vs the host-published water plane.",
+               args.minValue = 0.0f, args.maxValue = 100.0f, args.flags = RtxOptionFlags::UserSetting);
+    RTX_OPTION_ARGS("rtx.volumetrics", bool, enableWaterFogGainSplit, true,
+               "Fork (Morrowind): when true, fog below the water surface uses fogSunVisibilityGainUnderwater and fog above it uses fogSunVisibilityGain (split by froxel altitude vs the water plane). Requires the host to publish waterPlaneWorldZ (otherwise inert). Lets the above-water gain be raised for sun shafts without the underwater fog blowing into a white wall.",
+               args.flags = RtxOptionFlags::UserSetting);
+    RTX_OPTION_FLAG("rtx.volumetrics", float, waterPlaneWorldZ, -1.0e9f, RtxOptionFlags::NoSave,
+               "Fork (Morrowind): world-space altitude of the water surface, published by the host each frame (a very low sentinel means no water in the current cell -> split inert). Drives the above/underwater fog gain and density split. NoSave (game-driven).");
     RTX_OPTION("rtx.volumetrics", bool, enableInPortals, false,
                "Enables using extra frustum-aligned volumes for lighting in portals.\n"
                "Note that enabling this option will require 3x the memory of the typical froxel grid as well as degrade performance in some cases.\n"
@@ -250,6 +258,46 @@ namespace dxvk {
                "This scaling factor is applied to the fixed function fog's color and becomes a multiscattering approximation in the volumetrics system.\n"
                "Sometimes useful but this multiscattering approximation is very basic (just a simple ambient term for now essentially) and may not look very good depending on various conditions.",
                args.minValue = 0.0f);
+    RTX_OPTION_ARGS("rtx.volumetrics", float, fogAmbientBrightness, 0.3f,
+               "Fork (Morrowind): decouples the volumetric fog's flat ambient in-scatter brightness "
+               "from the weather fog COLOR. The legacy ambient floor (fogColor * fogRemapColorMultiscatteringScale) "
+               "goes black in dense overcast / rain / foggy weather -- the weather fog color is near-black there "
+               "AND the sun cannot reach the dense medium to in-scatter, so the fog reads as a midday black-out. "
+               "This instead drives the ambient floor to the weather color's HUE at this luminance, so dense fog "
+               "reads as lit haze. It does NOT change fog density (extinction still comes from transmittanceColor / "
+               "transmittanceMeasurementDistance) and does NOT touch fogSunVisibilityGain (which blows white over "
+               "water). Tune to taste; 0 restores the legacy weather-color floor.",
+               args.minValue = 0.0f, args.maxValue = 50.0f);
+    RTX_OPTION_ARGS("rtx.volumetrics", bool, fogDensityDecoupleFromColor, false,
+               "Fork (Morrowind): decouples volumetric fog DENSITY (extinction) from the (weather) fog COLOR.\n"
+               "By default the fog color's luminance does double duty -- sigma_t = -ln(fogColor)/measurementDistance -- "
+               "so a darker weather fog color simultaneously (a) thickens the fog and (b) extinguishes the daytime "
+               "scene to near-black, while a brighter color makes the fog vanish. There is no middle ground because "
+               "one value controls both thickness and how much the medium eats the scene.\n"
+               "When enabled, extinction is computed from fogDensityReferenceTransmittance (a neutral 'fog thickness' "
+               "control) combined with the per-weather fog DISTANCE (measurementDistance), so the weather color no "
+               "longer controls density -- it only tints the in-scatter (via Fog Ambient Brightness). Result: thick, "
+               "lit fog without the midday black-out. Density still varies per weather via the per-weather fog distance.\n"
+               "false = legacy behavior (color luminance drives density).",
+               args.flags = RtxOptionFlags::UserSetting);
+    RTX_OPTION_ARGS("rtx.volumetrics", float, fogDensityReferenceTransmittance, 0.4f,
+               "Fork (Morrowind): neutral reference transmittance used for fog extinction when "
+               "fogDensityDecoupleFromColor is enabled. This is the fraction of light that survives across one "
+               "measurementDistance of fog (sigma_t = -ln(this)/measurementDistance), independent of the weather "
+               "fog color. Lower = thicker/denser fog; higher = thinner. Has no effect unless "
+               "fogDensityDecoupleFromColor is true.",
+               args.minValue = 1.0f / 255.0f, args.maxValue = 1.0f - 1.0f / 255.0f, args.flags = RtxOptionFlags::UserSetting);
+    RTX_OPTION_ARGS("rtx.volumetrics", float, fogDensityReferenceTransmittanceUnderwater, 0.4f,
+               "Fork (Morrowind): neutral reference transmittance for the ABSOLUTE underwater fog "
+               "density, independent of the above-water density and of the weather fog color. Froxels below "
+               "the host-published water plane (when enableWaterFogGainSplit is on) derive their OWN extinction "
+               "sigma_t = -ln(this)/measurementDistance from this value, so water stays murky even in clear "
+               "weather -- a simple multiplier of the above-water sigma_t fails because that sigma_t is ~0 in "
+               "clear weather (N x ~0 = ~0). Lower = murkier/denser underwater fog; higher = clearer. The "
+               "WeatherBlender writes this per-frame from the per-weather underwater density; this global is "
+               "the dormant-blender fallback. Inert unless enableWaterFogGainSplit is on and the host "
+               "publishes the water plane.",
+               args.minValue = 1.0f / 255.0f, args.maxValue = 1.0f - 1.0f / 255.0f, args.flags = RtxOptionFlags::UserSetting);
 
     enum class RaytraceMode {
       RayQuery = 0,

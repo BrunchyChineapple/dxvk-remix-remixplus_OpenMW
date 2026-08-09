@@ -326,6 +326,18 @@ namespace dxvk {
           RemixGui::ColorEdit3("Single Scattering Albedo", &singleScatteringAlbedoObject());
           RemixGui::DragFloat("Anisotropy", &anisotropyObject(), 0.01f, -.99f, .99f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
           RemixGui::DragFloat("Fog Sun Visibility Gain", &fogSunVisibilityGainObject(), 0.05f, 0.0f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          RemixGui::SetTooltipToLastWidgetOnHover(
+              "Above-water sun in-scatter gain. Raise for daytime sun shafts. Fog below the water surface "
+              "is controlled separately (see the underwater gain + Split Fog Gain At Water Plane).");
+          RemixGui::Checkbox("Split Fog Gain At Water Plane", &enableWaterFogGainSplitObject());
+          RemixGui::SetTooltipToLastWidgetOnHover(
+              "When on, fog below the water surface uses the underwater gain and fog above uses the above-water "
+              "gain (split by froxel altitude vs the host-published water plane). Lets you raise the above-water gain "
+              "for sun shafts without the underwater fog blowing into a white wall. Inert if the host isn't publishing the water level.");
+          RemixGui::DragFloat("Fog Sun Visibility Gain (Underwater)", &fogSunVisibilityGainUnderwaterObject(), 0.1f, 0.0f, 100.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          RemixGui::SetTooltipToLastWidgetOnHover(
+              "Sun in-scatter gain for fog below the water surface (the fog you see through the water from shore). "
+              "Keep low/0 to kill the underwater white wall while the above-water gain is raised for sun shafts.");
           RemixGui::DragFloat("Volumetric Consumer Gain", &volumetricConsumerGainObject(), 0.001f, 0.0f, 5.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
           RemixGui::DragFloat("Depth Offset", &depthOffsetObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 
@@ -381,6 +393,37 @@ namespace dxvk {
           ImGui::EndDisabled();
 
           RemixGui::DragFloat("Color Multiscattering Scale", &fogRemapColorMultiscatteringScaleObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+
+          RemixGui::DragFloat("Fog Ambient Brightness", &fogAmbientBrightnessObject(), 0.01f, 0.0f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          RemixGui::SetTooltipToLastWidgetOnHover(
+              "Ambient in-scatter floor for volumetric fog. Decouples the floor "
+              "BRIGHTNESS from the weather fog color's darkness: keeps the weather "
+              "color's hue but drives its luminance to this value, so dense overcast "
+              "fog reads as lit haze instead of a midday black-out. Density and "
+              "fogSunVisibilityGain are untouched. 0 = legacy floor (weather color x "
+              "Color Multiscattering Scale). This is a synthetic backstop; the physical "
+              "fix is the cloud Sky Ambient sliders (requires rtx.skyMode = 1).");
+
+          RemixGui::Separator();
+
+          RemixGui::Checkbox("Decouple Fog Density From Color", &fogDensityDecoupleFromColorObject());
+          RemixGui::SetTooltipToLastWidgetOnHover(
+              "Splits fog DENSITY from the weather fog COLOR. Off (legacy): the fog color's "
+              "luminance drives extinction, so a dark weather color both thickens the fog AND "
+              "blacks out the daytime scene (and a bright color makes fog vanish) -- one value "
+              "doing double duty. On: extinction comes from 'Fog Density Reference Transmittance' "
+              "+ the per-weather fog distance, so the color only tints the fog (via Fog Ambient "
+              "Brightness) and no longer blacks out midday. Pair with Fog Ambient Brightness for "
+              "lit fog at Fog Sun Visibility Gain = 0 (no over-water white wall).");
+
+          ImGui::BeginDisabled(!fogDensityDecoupleFromColor());
+          {
+            RemixGui::DragFloat("Fog Density Reference Transmittance", &fogDensityReferenceTransmittanceObject(), 0.005f, 1.0f / 255.0f, 1.0f - 1.0f / 255.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            RemixGui::SetTooltipToLastWidgetOnHover(
+                "Fraction of light surviving across one fog measurement-distance when density is "
+                "decoupled from color. Lower = thicker/denser fog, higher = thinner. Color-independent.");
+          }
+          ImGui::EndDisabled();
 
           ImGui::Unindent();
         }
@@ -519,6 +562,14 @@ namespace dxvk {
             normalizedRange = (fogState.end - fogRemapMaxDistanceMin) / maxDistanceRange;
           }
 
+          // Clamp the normalized position of the game's fog-end inside the [Min,Max] input window
+          // to [0,1]. Without this, a short weather fog-end (thick fog, sunrise/sunset hazes) drives
+          // normalizedRange < 0, which extrapolates transmittanceMeasurementDistance toward
+          // zero/negative and makes the Beer-Lambert extinction sigma_t = -ln(T)/d explode into a
+          // near-opaque medium a couple meters from the camera. Clamping bounds the output to the
+          // configured [...MeasurementDistanceMin, ...Max] window so it can never invert.
+          normalizedRange = normalizedRange < 0.0f ? 0.0f : (normalizedRange > 1.0f ? 1.0f : normalizedRange);
+
           transmittanceMeasurementDistance = normalizedRange * transmittanceMeasurementDistanceRange + fogRemapTransmittanceMeasurementDistanceMin;
         } else if (fogState.mode == D3DFOG_EXP || fogState.mode == D3DFOG_EXP2) {
           // Note: Derived using the following, doesn't take fog color into account but that is fine for a rough estimate:
@@ -526,7 +577,13 @@ namespace dxvk {
           // density^2 = -ln(color) / measurement_distance (For exp2)
 
           if (fogState.density != 0.0f) {
-            float const transmittanceColorLuminance { sRGBLuminance(transmittanceColorLinear) };
+            // When density is decoupled from color, derive the measurement distance from the
+            // neutral reference transmittance instead of the weather color luminance, so the
+            // EXP/EXP2 density is color-independent (matches the LINEAR-mode decouple below).
+            float const transmittanceColorLuminance { fogDensityDecoupleFromColor()
+              ? (fogDensityReferenceTransmittance() < MinTransmittanceValue ? MinTransmittanceValue
+                 : (fogDensityReferenceTransmittance() > MaxTransmittanceValue ? MaxTransmittanceValue : fogDensityReferenceTransmittance()))
+              : sRGBLuminance(transmittanceColorLinear) };
 
             transmittanceMeasurementDistance = -log(transmittanceColorLuminance) / fogState.density;
             // Todo: Scene scale stuff ignored for now because scene scale stuff is not actually functioning properly. Add back in if it's ever fixed.
@@ -537,18 +594,74 @@ namespace dxvk {
         }
       }
 
-      // Add some "ambient" from the original fog as a constant term applied to fog during preintegration
-      multiScatteringEstimate = fogState.color * fogRemapColorMultiscatteringScale();
+      // Fog ambient in-scatter floor. The legacy floor (fogState.color *
+      // fogRemapColorMultiscatteringScale) collapses to black in dense overcast
+      // weather (rain/foggy): the weather fog color is near-black there AND the
+      // sun can't reach the dense medium to in-scatter, so the fog's only light
+      // IS this floor -> a midday black-out. fogAmbientBrightness decouples the
+      // floor BRIGHTNESS from the weather color's darkness: keep the weather
+      // color's hue, but drive its luminance to fogAmbientBrightness, so dense
+      // fog reads as lit haze. Density is untouched (extinction below derives
+      // from transmittanceColor / measurementDistance) and fogSunVisibilityGain
+      // is not involved (no over-water blow-out). <= 0 keeps the legacy floor.
+      if (fogAmbientBrightness() > 0.0f) {
+        const float weatherFogLuminance = sRGBLuminance(fogState.color);
+        const Vector3 weatherFogHue = weatherFogLuminance > 1.0e-3f
+          ? fogState.color * (1.0f / weatherFogLuminance)
+          : Vector3(1.0f, 1.0f, 1.0f);
+        multiScatteringEstimate = weatherFogHue * fogAmbientBrightness();
+      } else {
+        // Add some "ambient" from the original fog as a constant term applied to fog during preintegration
+        multiScatteringEstimate = fogState.color * fogRemapColorMultiscatteringScale();
+      }
     }
 
     // Calculate scattering and attenuation coefficients for the volume
 
+    // Never invert a zero/negative measurement distance. The clamp in the LINEAR remap path above
+    // bounds that path, but this also covers EXP/EXP2 and any path that leaves
+    // transmittanceMeasurementDistance unset/pathological, so sigma_t below stays finite.
+    if (!(transmittanceMeasurementDistance > 1.0f)) {
+      transmittanceMeasurementDistance = 1.0f;
+    }
+
+    // Fog density / color split (Morrowind fork): by default the weather fog color's luminance
+    // drives extinction (sigma_t = -ln(color)/distance), so a dark weather fog color both thickens
+    // the fog AND extinguishes the daytime scene to near-black -- one value doing double duty. When
+    // fogDensityDecoupleFromColor is enabled, extinction is derived from a neutral reference
+    // transmittance instead, so the weather color only tints the in-scatter (via the
+    // multiScatteringEstimate / fogAmbientBrightness floor above) and density is controlled by
+    // fogDensityReferenceTransmittance + the per-weather fog distance (measurementDistance). The
+    // result is thick, lit fog without the midday black-out.
+    Vector3 densityTransmittanceLinear = transmittanceColorLinear;
+    if (fogDensityDecoupleFromColor()) {
+      const float refRaw = fogDensityReferenceTransmittance();
+      const float ref = refRaw < MinTransmittanceValue ? MinTransmittanceValue
+                      : (refRaw > MaxTransmittanceValue ? MaxTransmittanceValue : refRaw);
+      densityTransmittanceLinear = Vector3(ref, ref, ref);
+    }
+
     Vector3 const volumetricAttenuationCoefficient{
-      -log(transmittanceColorLinear.x) / transmittanceMeasurementDistance,
-      -log(transmittanceColorLinear.y) / transmittanceMeasurementDistance,
-      -log(transmittanceColorLinear.z) / transmittanceMeasurementDistance
+      -log(densityTransmittanceLinear.x) / transmittanceMeasurementDistance,
+      -log(densityTransmittanceLinear.y) / transmittanceMeasurementDistance,
+      -log(densityTransmittanceLinear.z) / transmittanceMeasurementDistance
     };
     Vector3 const volumetricScatteringCoefficient{ volumetricAttenuationCoefficient * singleScatteringAlbedo() };
+
+    // Absolute underwater fog density (Morrowind fork): underwater froxels (selected per-froxel by
+    // the water-plane test in the shader, when enableWaterFogSplit is on) use their OWN
+    // color-independent extinction derived from fogDensityReferenceTransmittanceUnderwater over the
+    // same per-weather measurement distance, NOT a scale of the (near-zero-in-clear-weather)
+    // above-water sigma_t -- that is exactly why a simple multiplier fails (N * ~0 = ~0). Keeping its
+    // own reference transmittance gives water that stays murky regardless of weather. Always computed
+    // (cheap, a couple of logs); only consumed by the shader when enableWaterFogSplit != 0, so it is
+    // inert otherwise and does not depend on the above-water fogDensityDecoupleFromColor toggle.
+    const float refUwRaw = fogDensityReferenceTransmittanceUnderwater();
+    const float refUw = refUwRaw < MinTransmittanceValue ? MinTransmittanceValue
+                      : (refUwRaw > MaxTransmittanceValue ? MaxTransmittanceValue : refUwRaw);
+    const float underwaterAttenuation = -log(refUw) / transmittanceMeasurementDistance;
+    Vector3 const underwaterAttenuationCoefficient{ underwaterAttenuation, underwaterAttenuation, underwaterAttenuation };
+    Vector3 const underwaterScatteringCoefficient{ underwaterAttenuationCoefficient * singleScatteringAlbedo() };
 
     const RtCamera& mainCamera = cameraManager.getMainCamera();
 
@@ -596,6 +709,7 @@ namespace dxvk {
     volumeArgs.volumetricFogAnisotropy = anisotropy();
     volumeArgs.fogSunVisibilityGain = RtxOptions::skyMode() == SkyMode::Numos ? fogSunVisibilityGain() : 1.0f;
     volumeArgs.volumetricConsumerGain = RtxOptions::skyMode() == SkyMode::Numos ? volumetricConsumerGain() : 1.0f;
+    volumeArgs.fogSunVisibilityGainUnderwater = fogSunVisibilityGainUnderwater();
 
     volumeArgs.enableNoiseFieldDensity = enableHeterogeneousFog();
     volumeArgs.noiseFieldSubStepSize = noiseFieldSubStepSizeMeters() * RtxOptions::getMeterToWorldUnitScale();
@@ -627,6 +741,18 @@ namespace dxvk {
     volumeArgs.planetCenter = planetCenter;
     volumeArgs.atmosphereRadiusSquared = atmosphereRadius * atmosphereRadius;
     volumeArgs.maxAttenuationDistanceForNoAtmosphere = transmittanceMeasurementDistance * 5;
+
+    // Underwater fog split (Morrowind fork). waterPlaneWorldZ is published by the host in world units
+    // along the same up axis the atmosphere uses; a very low sentinel (no water in cell) leaves the
+    // split inert. The shader compares each froxel's altitude (dot(worldPos, sceneUpDirection)) to
+    // this plane and picks the underwater vs above-water gain and extinction.
+    const float waterPlaneZ = waterPlaneWorldZ();
+    volumeArgs.waterPlaneAltitude = waterPlaneZ;
+    volumeArgs.enableWaterFogSplit = (enableWaterFogGainSplit() && waterPlaneZ > -1.0e8f) ? 1u : 0u;
+
+    // Absolute underwater fog density coefficients (consumed only when the split above is on).
+    volumeArgs.underwaterAttenuationCoefficient = underwaterAttenuationCoefficient;
+    volumeArgs.underwaterScatteringCoefficient = underwaterScatteringCoefficient;
 
     volumeArgs.cameras[froxelVolumeMain] = mainCamera.getVolumeShaderConstants(volumeArgs.froxelMaxDistance);
     if (enablePortalVolumes) {
