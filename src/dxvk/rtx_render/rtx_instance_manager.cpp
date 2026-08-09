@@ -156,7 +156,11 @@ namespace dxvk {
   namespace {
     template<int RtInstanceSize> struct CheckRtInstanceSize {
       // The second line of the build error should contain the new size of RtInstance in the template argument, i.e. `dxvk::CheckRtInstanceSize<newSize>`
-      static_assert(RtInstanceSize == 776, "RtInstance size has changed.  Fix the copy constructor above this message, then update the expected size.");
+      // 776 -> 792 on adding m_normalTextureIndex, m_roughnessTextureIndex and m_metallicTextureIndex so
+      // the game capturer can find a material's PBR images. Sixteen bytes rather than the twelve the three
+      // uint32_ts occupy, because of alignment padding -- which is exactly why this number is read off the
+      // compiler's own diagnostic rather than reasoned about.
+      static_assert(RtInstanceSize == 792, "RtInstance size has changed.  Fix the copy constructor above this message, then update the expected size.");
     };
     CheckRtInstanceSize<sizeof(RtInstance)> _rtInstanceSizeTest;
   }
@@ -172,6 +176,9 @@ namespace dxvk {
     m_seenCameraTypes = src.m_seenCameraTypes;
     m_materialType = src.m_materialType;
     m_albedoOpacityTextureIndex = src.m_albedoOpacityTextureIndex;
+    m_normalTextureIndex = src.m_normalTextureIndex;
+    m_roughnessTextureIndex = src.m_roughnessTextureIndex;
+    m_metallicTextureIndex = src.m_metallicTextureIndex;
     m_samplerIndex = src.m_samplerIndex;
     m_secondaryOpacityTextureIndex = src.m_secondaryOpacityTextureIndex;
     m_secondarySamplerIndex = src.m_secondarySamplerIndex;
@@ -1013,6 +1020,11 @@ namespace dxvk {
     if (material.getType() == RtSurfaceMaterialType::Opaque) {
       instance.m_albedoOpacityTextureIndex = material.getOpaqueSurfaceMaterial().getAlbedoOpacityTextureIndex();
       instance.m_samplerIndex = material.getOpaqueSurfaceMaterial().getSamplerIndex();
+      // Carried alongside the albedo purely so the capturer can reach them; nothing in rendering reads
+      // these from the instance. Opaque only, because a ray-portal material has no PBR slots to record.
+      instance.m_normalTextureIndex = material.getOpaqueSurfaceMaterial().getNormalTextureIndex();
+      instance.m_roughnessTextureIndex = material.getOpaqueSurfaceMaterial().getRoughnessTextureIndex();
+      instance.m_metallicTextureIndex = material.getOpaqueSurfaceMaterial().getMetallicTextureIndex();
     } else if (material.getType() == RtSurfaceMaterialType::RayPortal) {
       instance.m_albedoOpacityTextureIndex = material.getRayPortalSurfaceMaterial().getMaskTextureIndex();
       instance.m_samplerIndex = material.getRayPortalSurfaceMaterial().getSamplerIndex();

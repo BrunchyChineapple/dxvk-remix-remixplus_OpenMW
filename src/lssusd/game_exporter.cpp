@@ -329,6 +329,9 @@ namespace ShaderAttr {
 enum Enum {
   OutputsOut,
   DiffuseTex,
+  NormalTex,
+  RoughnessTex,
+  MetallicTex,
   ImplSrc,
   MdlSrcAsset,
   MdlSrcAssetSubId,
@@ -340,6 +343,13 @@ enum Enum {
 static std::unordered_map<Enum,std::string> attrNames {
   {OutputsOut,       "outputs:out"},
   {DiffuseTex,       "inputs:diffuse_texture"},
+  // AperturePBR_Opacity's own input names, not names of this exporter's choosing. A replacement pack is
+  // authored against these, the toolkit's material panel binds its slots to them, and the runtime's MDL
+  // reads them -- so a captured material that spelled them differently would export a texture nothing
+  // could see. Verified against the pack in this project, whose materials set the same three.
+  {NormalTex,        "inputs:normalmap_texture"},
+  {RoughnessTex,     "inputs:reflectionroughness_texture"},
+  {MetallicTex,      "inputs:metallic_texture"},
   {ImplSrc,          "info:implementationSource"},
   {MdlSrcAsset,      "info:mdl:sourceAsset"},
   {MdlSrcAssetSubId, "info:mdl:sourceAsset:subIdentifier"},
@@ -351,6 +361,9 @@ static std::unordered_map<Enum,std::string> attrNames {
 static std::unordered_map<Enum,AttrDesc> attrDescs{
   AttrDescMapEntry(OutputsOut,       Token, false, Varying),
   AttrDescMapEntry(DiffuseTex,       Asset, false, Varying),
+  AttrDescMapEntry(NormalTex,        Asset, false, Varying),
+  AttrDescMapEntry(RoughnessTex,     Asset, false, Varying),
+  AttrDescMapEntry(MetallicTex,      Asset, false, Varying),
   AttrDescMapEntry(ImplSrc,          Token, false, Uniform),
   AttrDescMapEntry(MdlSrcAsset,      Asset, false, Uniform),
   AttrDescMapEntry(MdlSrcAssetSubId, Token, false, Uniform),
@@ -420,6 +433,31 @@ void GameExporter::exportMaterials(const Export& exportData, ExportContext& ctx)
       std::filesystem::relative(computeLocalPath(matData.albedoTexPath), fullMaterialBasePath).string();
     ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::DiffuseTex].Set(pxr::SdfAssetPath(relToMaterialsTexPath)));
     shaderAttrs[ShaderAttr::DiffuseTex].SetColorSpace(pxr::TfToken("auto"));
+
+    // The PBR slots, written only when the material actually carries one.
+    //
+    // Conditional rather than unconditional because an empty asset path is not the same as an absent
+    // attribute: authoring `inputs:normalmap_texture = @@` would have the MDL sample a nonexistent texture
+    // rather than fall back to its constant, and would show the toolkit an occupied slot holding nothing.
+    // A material with only an albedo therefore exports byte-identically to before this existed.
+    //
+    // Colour space is the part that matters and the part that is easy to get wrong. Albedo above asks for
+    // "auto", which lets the loader infer sRGB from the file. These three are data, not colour: a normal
+    // map decoded through an sRGB curve bends every vector toward the surface, and roughness read that way
+    // is wrong in a direction that reads as "slightly too shiny everywhere" rather than as an obvious
+    // error. "raw" is the token that suppresses the transform.
+    const auto setDataTexture = [&](const ShaderAttr::Enum attr, const std::string& path) {
+      if (path.empty()) {
+        return;
+      }
+      const auto relPath =
+        std::filesystem::relative(computeLocalPath(path), fullMaterialBasePath).string();
+      ASSERT_OR_EXECUTE(shaderAttrs[attr].Set(pxr::SdfAssetPath(relPath)));
+      shaderAttrs[attr].SetColorSpace(pxr::TfToken("raw"));
+    };
+    setDataTexture(ShaderAttr::NormalTex, matData.normalTexPath);
+    setDataTexture(ShaderAttr::RoughnessTex, matData.roughnessTexPath);
+    setDataTexture(ShaderAttr::MetallicTex, matData.metallicTexPath);
 
     // Create and set OmniPBR MDL boilerplate attributes on shader
     ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::ImplSrc].Set(pxr::TfToken("sourceAsset")));

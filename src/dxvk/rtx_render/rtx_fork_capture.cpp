@@ -190,6 +190,62 @@ namespace fork_hooks {
       }
     }
 
+    // The PBR slots, exported the same way the albedo above is.
+    //
+    // These are reached through the instance rather than through LegacyMaterialData, because the legacy
+    // material describes what the *game* submitted and holds colour textures only -- there is no field on it
+    // that a normal or roughness map could occupy. The PBR data lives on the opaque surface material the
+    // runtime built, and InstanceManager::bindMaterial copies its texture indices onto the instance for
+    // exactly this purpose.
+    //
+    // Written with a distinct filename per slot: two slots of one material can legitimately hold the same
+    // image -- a packed texture used as both roughness and metallic, say -- and naming the file after the
+    // material alone would have the second export overwrite the first.
+    {
+      RtxTextureManager& textureManager = ctx->getCommonObjects()->getTextureManager();
+      const auto& textureTable = textureManager.getTextureTable();
+
+      const auto exportSlot = [&](const uint32_t textureIndex, const char* slotName) -> std::string {
+        if (textureIndex == kSurfaceMaterialInvalidTextureIndex || textureIndex >= textureTable.size()) {
+          return {};
+        }
+        const TextureRef& textureRef = textureTable[textureIndex];
+        if (!textureRef.isValid() || textureRef.getImageView() == nullptr
+            || textureRef.getImageView()->image().ptr() == nullptr) {
+          return {};
+        }
+        const auto& imageInfo = textureRef.getImageView()->image()->info();
+        if (imageInfo.extent.width == 0 || imageInfo.extent.height == 0) {
+          return {};
+        }
+
+        const XXH64_hash_t slotHash = textureRef.getImageHash();
+        if (slotHash == 0 || slotHash == kEmptyHash) {
+          return {};
+        }
+
+        const std::string filename = str::format(slotName, "_", dxvk::hashToString(slotHash), ".dds");
+        try {
+          // Claimed on the hash so a texture shared by many materials is written once, matching the albedo
+          // path. The slot name is part of the filename but not of the claim, because the same image in two
+          // slots is still one file's worth of bytes.
+          if (claimTextureExport(capturer.m_pCap->idStr, slotHash)) {
+            capturer.m_exporter.dumpImageToFile(ctx, BASE_DIR + lss::commonDirName::texDir, filename,
+                                                textureRef.getImageView()->image());
+          }
+        } catch (const std::exception& e) {
+          Logger::warn(str::format("[GameCapturer] Failed to export ", slotName, " for material ", matName,
+                                   ": ", e.what()));
+          return {};
+        }
+        return str::format(BASE_DIR + lss::commonDirName::texDir, filename);
+      };
+
+      lssMat.normalTexPath = exportSlot(rtInstance.getNormalTextureIndex(), "normal");
+      lssMat.roughnessTexPath = exportSlot(rtInstance.getRoughnessTextureIndex(), "roughness");
+      lssMat.metallicTexPath = exportSlot(rtInstance.getMetallicTextureIndex(), "metallic");
+    }
+
     lssMat.enableOpacity = bEnableOpacity;
 
     // Sampler state. LegacyMaterialData only carries a sampler on the D3D9 path, but the exporter writes

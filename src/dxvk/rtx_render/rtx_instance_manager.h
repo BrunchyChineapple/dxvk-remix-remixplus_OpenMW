@@ -136,6 +136,14 @@ public:
   bool isOpaque() const;
 
   uint32_t getAlbedoOpacityTextureIndex() const { return m_albedoOpacityTextureIndex; }
+
+  // Recorded for the same reason the albedo index above is: the game capturer has an RtInstance and needs
+  // to find the images behind its material, and there is no route from an instance to its surface material
+  // once the draw has been processed. Without these a capture could only ever describe a material's albedo,
+  // so a host supplying normal or roughness maps had them rendered and then dropped on export.
+  uint32_t getNormalTextureIndex() const { return m_normalTextureIndex; }
+  uint32_t getRoughnessTextureIndex() const { return m_roughnessTextureIndex; }
+  uint32_t getMetallicTextureIndex() const { return m_metallicTextureIndex; }
   uint32_t getSamplerIndex() const { return m_samplerIndex; }
   uint32_t getSecondaryOpacityTextureIndex() const { return m_secondaryOpacityTextureIndex; }
   uint32_t getSecondarySamplerIndex() const { return m_secondarySamplerIndex; }
@@ -217,6 +225,9 @@ private:
 
   MaterialDataType m_materialType = MaterialDataType::Invalid;
   uint32_t m_albedoOpacityTextureIndex = kSurfaceMaterialInvalidTextureIndex;
+  uint32_t m_normalTextureIndex = kSurfaceMaterialInvalidTextureIndex;
+  uint32_t m_roughnessTextureIndex = kSurfaceMaterialInvalidTextureIndex;
+  uint32_t m_metallicTextureIndex = kSurfaceMaterialInvalidTextureIndex;
   uint32_t m_samplerIndex = kSurfaceMaterialInvalidTextureIndex;
   uint32_t m_secondaryOpacityTextureIndex = kSurfaceMaterialInvalidTextureIndex;
   uint32_t m_secondarySamplerIndex = kSurfaceMaterialInvalidTextureIndex;

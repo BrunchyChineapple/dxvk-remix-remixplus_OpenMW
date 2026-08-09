@@ -127,8 +127,17 @@ struct Material {
     VkFilter             filter = VK_FILTER_LINEAR;
     VkClearColorValue    borderColor {};
   } sampler;
-  // TODO: std::string normalTexPath;
-  // TODO: etc...
+  // The PBR slots the capture format previously had no room for, which is why a captured material arrived
+  // in the toolkit with only its albedo filled in no matter what the game supplied.
+  //
+  // A host that binds these -- OpenMW detects `_n`, `_nh` and `_spec` beside every diffuse and hands the
+  // results to the API -- had them used for rendering and then dropped on export, so the toolkit could not
+  // show them and an author could not swap them for something better. Each is empty when the material has
+  // no such texture, and the exporter writes an attribute only for the ones that are set, so a material
+  // with albedo alone still exports exactly as it did before.
+  std::string normalTexPath;
+  std::string roughnessTexPath;
+  std::string metallicTexPath;
 };
 
 using Index = int;
