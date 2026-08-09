@@ -37,11 +37,6 @@
 #include "rtx_context.h"
 #include "rtx_imgui.h"
 
-// Named explicitly rather than relied on transitively: the per-condition code below clamps a tint and builds
-// a label, and both were previously arriving through other headers by luck.
-#include <algorithm>
-#include <string>
-
 namespace dxvk {
 
   // Defined within an unnamed namespace to ensure unique definition across binary
@@ -331,52 +326,6 @@ namespace dxvk {
           RemixGui::ColorEdit3("Single Scattering Albedo", &singleScatteringAlbedoObject());
           RemixGui::DragFloat("Anisotropy", &anisotropyObject(), 0.01f, -.99f, .99f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
           RemixGui::DragFloat("Fog Sun Visibility Gain", &fogSunVisibilityGainObject(), 0.05f, 0.0f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-
-          // Per-condition fog. Every row is live, but only the active one is doing anything at this moment,
-          // so the active one is named above them -- without that the sliders look broken whenever the row
-          // being dragged is not the condition the game is currently in.
-          if (RemixGui::CollapsingHeader("Fog Conditions", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Indent();
-            RemixGui::Checkbox("Enable Per-Condition Fog", &enableConditionsObject());
-            ImGui::BeginDisabled(!enableConditions());
-
-            ImGui::Text("Active: %s", fogConditionName(activeCondition()));
-            ImGui::TextUnformatted("Density above 1 is thicker. Tint multiplies the transmittance colour.");
-
-            struct Row {
-              const char* mName;
-              RtxOption<float>& mDensity;
-              RtxOption<Vector3>& mTint;
-            };
-            Row rows[] = {
-              { "Interior",   interiorDensityScaleObject(),   interiorTintObject() },
-              { "Night",      nightDensityScaleObject(),      nightTintObject() },
-              { "Sunrise",    sunriseDensityScaleObject(),    sunriseTintObject() },
-              { "Day",        dayDensityScaleObject(),        dayTintObject() },
-              { "Sunset",     sunsetDensityScaleObject(),     sunsetTintObject() },
-              { "Underwater", underwaterDensityScaleObject(), underwaterTintObject() },
-            };
-
-            for (uint32_t i = 0; i < static_cast<uint32_t>(FogConditionCount); ++i) {
-              const Row& row = rows[i];
-              ImGui::PushID(static_cast<int>(i));
-
-              // The condition in force is worth marking, since it is the only row whose edits show up now.
-              const bool isActive = (activeCondition() == i);
-              if (RemixGui::CollapsingHeader(isActive ? (std::string(row.mName) + " (active)").c_str() : row.mName,
-                                             isActive ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-                ImGui::Indent();
-                RemixGui::DragFloat("Density Scale", &row.mDensity, 0.01f, 0.01f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-                RemixGui::ColorEdit3("Tint", &row.mTint);
-                ImGui::Unindent();
-              }
-
-              ImGui::PopID();
-            }
-
-            ImGui::EndDisabled();
-            ImGui::Unindent();
-          }
           RemixGui::DragFloat("Volumetric Consumer Gain", &volumetricConsumerGainObject(), 0.001f, 0.0f, 5.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
           RemixGui::DragFloat("Depth Offset", &depthOffsetObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 
@@ -469,50 +418,6 @@ namespace dxvk {
     froxelDepthSlices.setDeferred(static_cast<uint16_t>(qualityPreset.y));
   }
 
-  const char* RtxGlobalVolumetrics::fogConditionName(const uint32_t condition) {
-    switch (condition) {
-    case FogConditionInterior:   return "Interior";
-    case FogConditionNight:      return "Night";
-    case FogConditionSunrise:    return "Sunrise";
-    case FogConditionDay:        return "Day";
-    case FogConditionSunset:     return "Sunset";
-    case FogConditionUnderwater: return "Underwater";
-    default:                     return "Unknown";
-    }
-  }
-
-  Vector3 RtxGlobalVolumetrics::getConditionTint() const {
-    if (!enableConditions()) {
-      return Vector3(1.0f, 1.0f, 1.0f);
-    }
-
-    switch (activeCondition()) {
-    case FogConditionInterior:   return interiorTint();
-    case FogConditionNight:      return nightTint();
-    case FogConditionSunrise:    return sunriseTint();
-    case FogConditionDay:        return dayTint();
-    case FogConditionSunset:     return sunsetTint();
-    case FogConditionUnderwater: return underwaterTint();
-    default:                     return Vector3(1.0f, 1.0f, 1.0f);
-    }
-  }
-
-  float RtxGlobalVolumetrics::getConditionDensityScale() const {
-    if (!enableConditions()) {
-      return 1.0f;
-    }
-
-    switch (activeCondition()) {
-    case FogConditionInterior:   return interiorDensityScale();
-    case FogConditionNight:      return nightDensityScale();
-    case FogConditionSunrise:    return sunriseDensityScale();
-    case FogConditionDay:        return dayDensityScale();
-    case FogConditionSunset:     return sunsetDensityScale();
-    case FogConditionUnderwater: return underwaterDensityScale();
-    default:                     return 1.0f;
-    }
-  }
-
   void RtxGlobalVolumetrics::setPreset(const PresetType presetType) {
     const RtxGlobalVolumetrics::Preset& preset = Presets[presetType];
 
@@ -554,29 +459,12 @@ namespace dxvk {
   VolumeArgs RtxGlobalVolumetrics::getVolumeArgs(CameraManager const& cameraManager, FogState const& fogState, bool enablePortalVolumes) const {
     // Calculate the volumetric parameters from options and the fixed function fog state
 
-    // The active condition's tint and density, applied before anything else reads these values so every
-    // consumer below sees one consistent medium. Multiplied into the global rather than replacing it, so a
-    // host driving the medium from the game's own weather keeps doing so and these only bias it.
-    const Vector3 conditionTint = getConditionTint();
-    const float conditionDensityScale = std::max(getConditionDensityScale(), 0.01f);
-
-    // Clamped because a tint can legitimately be dragged to zero in the menu, and the attenuation
-    // coefficient below takes the log of this: zero would be an infinitely dense medium and one a division
-    // by zero. The same two bounds the rest of this system already respects.
-    Vector3 tintedTransmittance{
-      std::clamp(transmittanceColor().x * conditionTint.x, MinTransmittanceValue, MaxTransmittanceValue),
-      std::clamp(transmittanceColor().y * conditionTint.y, MinTransmittanceValue, MaxTransmittanceValue),
-      std::clamp(transmittanceColor().z * conditionTint.z, MinTransmittanceValue, MaxTransmittanceValue)
-    };
-
     // Note: Volumetric transmittance color option is in gamma space, so must be converted to linear for usage in the volumetric system.
-    Vector3 transmittanceColorLinear{ sRGBGammaToLinear(tintedTransmittance) };
+    Vector3 transmittanceColorLinear{ sRGBGammaToLinear(transmittanceColor()) };
 
     // Note: Fall back to usual default in cases such as the "none" D3D fog mode, no fog remapping specified, or invalid values in the fog mode derivation
     // (such as dividing by zero).
-    // Divided by the condition's density scale: the measurement distance is how far light travels before it
-    // is attenuated to the transmittance colour, so a shorter distance is a thicker medium.
-    float transmittanceMeasurementDistance = transmittanceMeasurementDistanceMeters() / conditionDensityScale * RtxOptions::getMeterToWorldUnitScale();
+    float transmittanceMeasurementDistance = transmittanceMeasurementDistanceMeters() * RtxOptions::getMeterToWorldUnitScale();
     Vector3 multiScatteringEstimate = Vector3();
 
     // Check if fog density is below the configurable threshold to determine if physical volumetrics should be used.

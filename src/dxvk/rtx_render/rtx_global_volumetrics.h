@@ -75,32 +75,6 @@ namespace dxvk {
         anisotropy(aniso) { }
     };
 
-    // The conditions a game's fog is expected to differ between.
-    //
-    // One global medium cannot serve all of these at once, which is the problem this exists to solve: fog
-    // that reads correctly at night is a grey veil at noon, and water is not air at any hour. The host says
-    // which condition it is currently in through the activeCondition option and each condition carries its
-    // own density and tint on top of whatever the host is driving, so they can be dialled in separately and
-    // independently of each other.
-    //
-    // Deliberately not weather. The host already varies the medium's colour and density per weather and per
-    // time of day -- for an OpenMW host that comes out of Morrowind's own per-phase fog data -- so these are
-    // adjustments on top of that, not a replacement for it.
-    enum FogCondition : uint32_t {
-      FogConditionInterior,
-      FogConditionNight,
-      FogConditionSunrise,
-      FogConditionDay,
-      FogConditionSunset,
-      FogConditionUnderwater,
-      FogConditionCount
-    };
-
-    // The medium as the current condition wants it, rather than as the global options state it.
-    Vector3 getConditionTint() const;
-    float getConditionDensityScale() const;
-    static const char* fogConditionName(uint32_t condition);
-
     static void onFroxelResourceOptionsChanged(DxvkDevice* device);
 
     // Froxel Radiance Cache/Volumetric Lighting ptions
@@ -178,37 +152,6 @@ namespace dxvk {
                args.flags = RtxOptionFlags::NoSave);
     RTX_OPTION_ARGS("rtx.volumetrics", float, anisotropy, 0.05f, "The anisotropy of the scattering phase function (-1 being backscattering, 0 being isotropic, 1 being forward scattering).",
                     args.minValue = -1.0f, args.maxValue = 1.0f);
-
-    // Per-condition fog. See the FogCondition enum for why these exist.
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", bool, enableConditions, true,
-               "Applies a per-condition density scale and tint on top of the global medium, selected by which condition the host reports being in.\n"
-               "Disable to return to a single global medium for every condition.",
-               args.flags = RtxOptionFlags::UserSetting);
-    // NoSave: this is the host reporting where the camera is, not a preference. Persisting it would start a
-    // session claiming to be underwater at midnight because that is where the game was left.
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", uint32_t, activeCondition, static_cast<uint32_t>(FogConditionDay),
-               "Which fog condition the host reports currently being in. Set by the host each time it changes; editing it by hand only holds until the next change.",
-               args.minValue = 0u, args.maxValue = static_cast<uint32_t>(FogConditionCount) - 1u,
-               args.flags = RtxOptionFlags::NoSave);
-
-    // Density is a scale rather than a distance so it composes with whatever the host derived from the
-    // game's own fog values, instead of overwriting it and throwing the weather away. Above one is thicker,
-    // because "denser fog" reading as a larger number is the way round that does not need explaining.
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", float, interiorDensityScale, 1.0f, "Density multiplier for interior fog.", args.minValue = 0.01f, args.maxValue = 100.0f);
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", float, nightDensityScale, 1.0f, "Density multiplier for night fog.", args.minValue = 0.01f, args.maxValue = 100.0f);
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", float, sunriseDensityScale, 1.0f, "Density multiplier for sunrise fog.", args.minValue = 0.01f, args.maxValue = 100.0f);
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", float, dayDensityScale, 1.0f, "Density multiplier for daytime fog.", args.minValue = 0.01f, args.maxValue = 100.0f);
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", float, sunsetDensityScale, 1.0f, "Density multiplier for sunset fog.", args.minValue = 0.01f, args.maxValue = 100.0f);
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", float, underwaterDensityScale, 1.0f, "Density multiplier for underwater fog.", args.minValue = 0.01f, args.maxValue = 100.0f);
-
-    // Multiplies the transmittance colour, so white is "leave the host's colour alone". This is where an
-    // underwater medium gets its blue-green: water absorbs red over metres, which no air preset should.
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", Vector3, interiorTint, Vector3(1.0f, 1.0f, 1.0f), "Tint applied to the transmittance colour for interior fog.", args.minValue = Vector3(0.0f, 0.0f, 0.0f), args.maxValue = Vector3(1.0f, 1.0f, 1.0f));
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", Vector3, nightTint, Vector3(1.0f, 1.0f, 1.0f), "Tint applied to the transmittance colour for night fog.", args.minValue = Vector3(0.0f, 0.0f, 0.0f), args.maxValue = Vector3(1.0f, 1.0f, 1.0f));
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", Vector3, sunriseTint, Vector3(1.0f, 1.0f, 1.0f), "Tint applied to the transmittance colour for sunrise fog.", args.minValue = Vector3(0.0f, 0.0f, 0.0f), args.maxValue = Vector3(1.0f, 1.0f, 1.0f));
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", Vector3, dayTint, Vector3(1.0f, 1.0f, 1.0f), "Tint applied to the transmittance colour for daytime fog.", args.minValue = Vector3(0.0f, 0.0f, 0.0f), args.maxValue = Vector3(1.0f, 1.0f, 1.0f));
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", Vector3, sunsetTint, Vector3(1.0f, 1.0f, 1.0f), "Tint applied to the transmittance colour for sunset fog.", args.minValue = Vector3(0.0f, 0.0f, 0.0f), args.maxValue = Vector3(1.0f, 1.0f, 1.0f));
-    RTX_OPTION_ARGS("rtx.volumetrics.condition", Vector3, underwaterTint, Vector3(0.45f, 0.75f, 0.85f), "Tint applied to the transmittance colour for underwater fog. Defaults to a blue-green, since water absorbs red far faster than air.", args.minValue = Vector3(0.0f, 0.0f, 0.0f), args.maxValue = Vector3(1.0f, 1.0f, 1.0f));
     RTX_OPTION_ARGS("rtx.volumetrics", float, fogSunVisibilityGain, 1.0f,
                     "Artistic visibility gain applied to the sun's contribution to volumetric fog in-scattering. "
                     "Scales fog-side sun visibility without affecting surface lighting (decals/particles/PSR/SAB read the cache straight). "
