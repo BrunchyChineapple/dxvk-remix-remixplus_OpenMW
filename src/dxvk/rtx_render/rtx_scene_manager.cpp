@@ -540,6 +540,11 @@ namespace dxvk {
 
     manageTextureVram();
 
+    // Release geometry belonging to meshes destroyed a few frames ago, now that nothing still in flight can
+    // reference it. Deferred rather than freed on destroy because ray tracing reads a geometry's index buffer
+    // and the previous frame's TLAS may still reach it.
+    m_pReplacer->releaseRetiredExternalMeshes(m_device->getCurrentFrameId());
+
     if (m_enqueueDelayedClear || m_pReplacer->checkForChanges(ctx)) {
       clear(ctx, true);
       m_enqueueDelayedClear = false;
@@ -3276,7 +3281,7 @@ namespace dxvk {
     if (handle) {
       m_drawCallTracker.removeReplacementInstancesWithSpatialMapHash(
           spatialMapHashForExternalDrawMesh(handle));
-      m_pReplacer->destroyExternalMesh(handle);
+      m_pReplacer->destroyExternalMesh(handle, m_device->getCurrentFrameId());
     }
   }
 

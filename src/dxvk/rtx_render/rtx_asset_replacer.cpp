@@ -230,8 +230,44 @@ const std::vector<RasterGeometry>& AssetReplacer::accessExternalMesh(remixapi_Me
   return *found->second;
 }
 
-void AssetReplacer::destroyExternalMesh(remixapi_MeshHandle handle) {
-  m_extMeshes.erase(handle);
+void AssetReplacer::destroyExternalMesh(remixapi_MeshHandle handle, uint32_t currentFrameId) {
+  auto found = m_extMeshes.find(handle);
+  if (found == m_extMeshes.end()) {
+    return;
+  }
+
+  // The handle stops resolving now, but the geometry it owns is not released yet.
+  //
+  // Erasing outright frees the vertex and index buffers on the spot, and the GPU may still be reading them:
+  // ray tracing hit shaders fetch attributes from a geometry's index buffer, and enablePreviousTLAS means the
+  // previous frame's TLAS can still hold an instance whose BLAS was built from this geometry. Two crash dumps
+  // faulted in precisely that memory, one 32% inside a terrain chunk's modified index buffer during Primary
+  // Rays and one just past another during Volume Integrate Raytracing. Both happened while teleporting, which
+  // destroys a great many meshes in one frame and so hits the window far more often than normal play.
+  m_retiredExtMeshes.emplace_back(currentFrameId, std::move(found->second));
+  m_extMeshes.erase(found);
+}
+
+void AssetReplacer::releaseRetiredExternalMeshes(uint32_t currentFrameId) {
+  // Held for the geometry-data window plus the frames that may still be in flight.
+  //
+  // The window alone is not enough. It governs when a BLAS may be freed, and this geometry has to outlive the
+  // BLAS built from it, not merely match it; and the destroy runs on the CS thread, where earlier submissions
+  // can still be executing. The margin covers that.
+  constexpr uint32_t kInFlightMargin = 3;
+  const uint32_t hold = RtxOptions::numFramesToKeepGeometryData() + kInFlightMargin;
+  if (currentFrameId <= hold) {
+    return;
+  }
+
+  const uint32_t oldest = currentFrameId - hold;
+  for (auto iter = m_retiredExtMeshes.begin(); iter != m_retiredExtMeshes.end(); ) {
+    if (iter->first < oldest) {
+      iter = m_retiredExtMeshes.erase(iter);
+    } else {
+      ++iter;
+    }
+  }
 }
 
 } // namespace dxvk

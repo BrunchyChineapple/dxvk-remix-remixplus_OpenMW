@@ -351,7 +351,12 @@ namespace dxvk {
 
     void registerExternalMesh(remixapi_MeshHandle handle, std::vector<RasterGeometry>&& submeshes);
     [[nodiscard]] const std::vector<RasterGeometry>& accessExternalMesh(remixapi_MeshHandle handle) const;
-    void destroyExternalMesh(remixapi_MeshHandle handle);
+    /// Retires an external mesh. The handle stops resolving immediately, but the geometry it owns is held
+    /// for a few frames before release -- see the definition for why releasing it at once faults the GPU.
+    void destroyExternalMesh(remixapi_MeshHandle handle, uint32_t currentFrameId);
+
+    /// Releases geometry retired long enough ago that no submitted work can still reference it. Once a frame.
+    void releaseRetiredExternalMeshes(uint32_t currentFrameId);
 
   private:
     void updateSecretReplacements();
@@ -371,6 +376,9 @@ namespace dxvk {
 
     std::unordered_map<remixapi_MaterialHandle, std::optional<MaterialData>> m_extMaterials {};
     std::unordered_map<remixapi_MeshHandle, std::unique_ptr<std::vector<RasterGeometry>>> m_extMeshes {};
+    /// Geometry whose handle has been destroyed, paired with the frame it was retired on, waiting out the
+    /// in-flight window before it is released.
+    std::vector<std::pair<uint32_t, std::unique_ptr<std::vector<RasterGeometry>>>> m_retiredExtMeshes {};
   };
 } // namespace dxvk
 
