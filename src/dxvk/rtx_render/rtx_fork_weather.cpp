@@ -483,8 +483,34 @@ namespace dxvk { namespace fork_weather { namespace {
     for (const auto& p : kPresetDescs) { if (name == p.name) return true; }
     return false;
   }
+  // Resolve the measurement-distance split's "inherit" sentinel to a real distance.
+  //
+  // Done here, on the way out of a preset read, so no zero ever reaches the blender: these fields are
+  // WK_Extinction and lerp in 1/distance space, where a 0 clamps to 1e-4 m and would read as opaque for the
+  // duration of a weather transition. Resolving after blending would be worse still, since a preset pair of
+  // (inherit, 500) has no meaningful midpoint until both sides are concrete.
+  //
+  // Underwater falls back through the above-water day/night value rather than straight to the base, so a
+  // preset that splits its air fog by time of day gets that split in its water for free and only needs the
+  // underwater fields when the water should differ from the air.
+  void resolveMeasurementDistanceInheritance(WeatherSnapshot& s) {
+    const float base = s.transmittanceMeasurementDistanceMeters;
+    if (s.transmittanceMeasurementDistanceMetersDay   <= 0.0f) s.transmittanceMeasurementDistanceMetersDay   = base;
+    if (s.transmittanceMeasurementDistanceMetersNight <= 0.0f) s.transmittanceMeasurementDistanceMetersNight = base;
+    if (s.transmittanceMeasurementDistanceMetersUnderwaterDay   <= 0.0f)
+      s.transmittanceMeasurementDistanceMetersUnderwaterDay   = s.transmittanceMeasurementDistanceMetersDay;
+    if (s.transmittanceMeasurementDistanceMetersUnderwaterNight <= 0.0f)
+      s.transmittanceMeasurementDistanceMetersUnderwaterNight = s.transmittanceMeasurementDistanceMetersNight;
+  }
+
   bool readPresetValues(const std::string& name, WeatherSnapshot& out) {
-    for (const auto& p : kPresetDescs) { if (name == p.name) { out = p.read(); return true; } }
+    for (const auto& p : kPresetDescs) {
+      if (name == p.name) {
+        out = p.read();
+        resolveMeasurementDistanceInheritance(out);
+        return true;
+      }
+    }
     return false;  // Unknown preset name -> caller treats blender as dormant.
   }
   int presetIndexForName(const std::string& name) {
@@ -847,7 +873,7 @@ namespace dxvk { namespace fork_weather { namespace {
     s.nightSkyColor              = RtxOptions::nightSkyColor();
     s.moonNeeStrength            = RtxOptions::moonNeeStrength();
     s.moonAtmosphericCouplingStrength = RtxOptions::moonAtmosphericCouplingStrength();
-    // Volumetric (27) — class is RtxGlobalVolumetrics
+    // Volumetric (31) - class is RtxGlobalVolumetrics
     s.transmittanceColor                     = RtxGlobalVolumetrics::transmittanceColor();
     s.transmittanceMeasurementDistanceMeters = RtxGlobalVolumetrics::transmittanceMeasurementDistanceMeters();
     // Fog density decoupling (fork): the live renderer holds ONE above-water and ONE underwater
@@ -857,6 +883,18 @@ namespace dxvk { namespace fork_weather { namespace {
     s.fogDensityReferenceTransmittanceNight = RtxGlobalVolumetrics::fogDensityReferenceTransmittance();
     s.fogDensityReferenceTransmittanceUnderwaterDay   = RtxGlobalVolumetrics::fogDensityReferenceTransmittanceUnderwater();
     s.fogDensityReferenceTransmittanceUnderwaterNight = RtxGlobalVolumetrics::fogDensityReferenceTransmittanceUnderwater();
+    // Same round-trip reasoning for the measurement distance split: the renderer holds one collapsed
+    // distance, so Day and Night both seed from it. The underwater pair seeds from the live underwater
+    // distance when it is set and from the above-water one when it is not, matching the fallback
+    // getVolumeArgs applies, so a snapshot-from-live reproduces what is actually on screen.
+    s.transmittanceMeasurementDistanceMetersDay   = RtxGlobalVolumetrics::transmittanceMeasurementDistanceMeters();
+    s.transmittanceMeasurementDistanceMetersNight = RtxGlobalVolumetrics::transmittanceMeasurementDistanceMeters();
+    {
+      const float liveUw = RtxGlobalVolumetrics::transmittanceMeasurementDistanceMetersUnderwater();
+      const float seedUw = liveUw > 0.0f ? liveUw : RtxGlobalVolumetrics::transmittanceMeasurementDistanceMeters();
+      s.transmittanceMeasurementDistanceMetersUnderwaterDay   = seedUw;
+      s.transmittanceMeasurementDistanceMetersUnderwaterNight = seedUw;
+    }
     s.singleScatteringAlbedo                 = RtxGlobalVolumetrics::singleScatteringAlbedo();
     s.volumetricAnisotropy                   = RtxGlobalVolumetrics::anisotropy();
     // Volumetric appearance (fork - full set)
@@ -1001,9 +1039,31 @@ namespace dxvk { namespace fork_weather { namespace {
     if (weatherVaries_nightSkyColor())                   RtxOptions::nightSkyColorObject().setImmediately(interp.nightSkyColor);
     if (weatherVaries_moonNeeStrength())                 RtxOptions::moonNeeStrengthObject().setImmediately(interp.moonNeeStrength);
     if (weatherVaries_moonAtmosphericCouplingStrength()) RtxOptions::moonAtmosphericCouplingStrengthObject().setImmediately(interp.moonAtmosphericCouplingStrength);
-    // Volumetric (27) — class is RtxGlobalVolumetrics
+    // Volumetric (31) - class is RtxGlobalVolumetrics
     RtxGlobalVolumetrics::transmittanceColorObject().setImmediately(interp.transmittanceColor);
-    RtxGlobalVolumetrics::transmittanceMeasurementDistanceMetersObject().setImmediately(interp.transmittanceMeasurementDistanceMeters);
+    // Time-of-day measurement distance (fork): the distance half of the transmittance pair, collapsed on the
+    // same sun-elevation curve as the density below so the two move together. lerpExtinction rather than a
+    // plain lerp because distance is an optical quantity -- the midpoint between 100 m and 1000 m of
+    // visibility is not 550 m, it is the distance whose extinction is halfway, which is what 1/distance space
+    // gives. Blending presets already treats this field that way (WK_Extinction); doing anything else here
+    // would make a weather transition and a sunrise disagree about what "half as thick" means.
+    //
+    // interp's four fields are concrete by now: readPresetValues resolved the inherit sentinel before the
+    // blend, so every preset contributes a real distance even when it ships no split of its own.
+    {
+      const float sunElevDegDist = RtxOptions::sunElevation();
+      const float todDayFactorDist = saturate((sunElevDegDist + 5.0f) / 15.0f);
+      const float collapsedMeasurementDistance = lerpExtinction(interp.transmittanceMeasurementDistanceMetersNight,
+                                                                interp.transmittanceMeasurementDistanceMetersDay,
+                                                                todDayFactorDist);
+      RtxGlobalVolumetrics::transmittanceMeasurementDistanceMetersObject().setImmediately(collapsedMeasurementDistance);
+      // Underwater gets its own collapse into its own global, which getVolumeArgs uses to derive the
+      // underwater extinction. Without this the water's density was pinned to the air's distance.
+      const float collapsedMeasurementDistanceUw = lerpExtinction(interp.transmittanceMeasurementDistanceMetersUnderwaterNight,
+                                                                  interp.transmittanceMeasurementDistanceMetersUnderwaterDay,
+                                                                  todDayFactorDist);
+      RtxGlobalVolumetrics::transmittanceMeasurementDistanceMetersUnderwaterObject().setImmediately(collapsedMeasurementDistanceUw);
+    }
     // Time-of-day fog density (fork): collapse the per-weather Day/Night reference transmittance by
     // sun elevation (deg above horizon). Night at/below -5 deg, full day at/above +10 deg, smooth
     // twilight blend between. sunElevation is game-driven (rtx.atmosphere.sunElevation, NoSave).

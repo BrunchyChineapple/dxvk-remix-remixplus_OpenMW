@@ -650,16 +650,23 @@ namespace dxvk {
 
     // Absolute underwater fog density (Morrowind fork): underwater froxels (selected per-froxel by
     // the water-plane test in the shader, when enableWaterFogSplit is on) use their OWN
-    // color-independent extinction derived from fogDensityReferenceTransmittanceUnderwater over the
-    // same per-weather measurement distance, NOT a scale of the (near-zero-in-clear-weather)
+    // color-independent extinction derived from fogDensityReferenceTransmittanceUnderwater over its own
+    // measurement distance, NOT a scale of the (near-zero-in-clear-weather)
     // above-water sigma_t -- that is exactly why a simple multiplier fails (N * ~0 = ~0). Keeping its
     // own reference transmittance gives water that stays murky regardless of weather. Always computed
     // (cheap, a couple of logs); only consumed by the shader when enableWaterFogSplit != 0, so it is
     // inert otherwise and does not depend on the above-water fogDensityDecoupleFromColor toggle.
+    //
+    // The measurement distance is now the underwater one when set. It shares the above-water distance at 0,
+    // which is the shipped default and the previous behaviour: the two halves were forced to share a
+    // distance, so tuning water thickness dragged the air along with it.
     const float refUwRaw = fogDensityReferenceTransmittanceUnderwater();
     const float refUw = refUwRaw < MinTransmittanceValue ? MinTransmittanceValue
                       : (refUwRaw > MaxTransmittanceValue ? MaxTransmittanceValue : refUwRaw);
-    const float underwaterAttenuation = -log(refUw) / transmittanceMeasurementDistance;
+    const float uwMeasurementDistanceOption = transmittanceMeasurementDistanceMetersUnderwater() * RtxOptions::getMeterToWorldUnitScale();
+    const float underwaterMeasurementDistance = uwMeasurementDistanceOption > 0.0f ? uwMeasurementDistanceOption
+                                                                                   : transmittanceMeasurementDistance;
+    const float underwaterAttenuation = -log(refUw) / underwaterMeasurementDistance;
     Vector3 const underwaterAttenuationCoefficient{ underwaterAttenuation, underwaterAttenuation, underwaterAttenuation };
     Vector3 const underwaterScatteringCoefficient{ underwaterAttenuationCoefficient * singleScatteringAlbedo() };
 

@@ -143,6 +143,18 @@ namespace dxvk {
     // which then shows up as an interior full of ash-storm fog until the first exterior frame corrects it.
     RTX_OPTION_ARGS("rtx.volumetrics", float, transmittanceMeasurementDistanceMeters, 500.0f, "The distance the specified transmittance color was measured at. Lower distances indicate a denser medium.  The unit of measurement is meters, respects scene scale.",
                     args.minValue = 0.0f, args.flags = RtxOptionFlags::NoSave);
+    // Fork (Morrowind): the underwater twin of the measurement distance above. Froxels below the
+    // host-published water plane derive their own extinction from
+    // fogDensityReferenceTransmittanceUnderwater, but that derivation used the ABOVE-water measurement
+    // distance, so underwater density could not be placed independently -- shortening the distance for
+    // thick water also thickened the air. This gives the underwater half its own distance.
+    //
+    // 0 means "use transmittanceMeasurementDistanceMeters", preserving the previous coupling, which is what
+    // every weather preset ships until one is tuned. NoSave and minValue mirror the option above: the
+    // weather blender writes this per frame, so it is frame state rather than a user preference.
+    RTX_OPTION_ARGS("rtx.volumetrics", float, transmittanceMeasurementDistanceMetersUnderwater, 0.0f,
+                    "Fork (Morrowind): distance the underwater reference transmittance is measured over. 0 falls back to transmittanceMeasurementDistanceMeters. Lower distances indicate denser water. Meters, respects scene scale.",
+                    args.minValue = 0.0f, args.flags = RtxOptionFlags::NoSave);
     // NoSave for the same reason as the measurement distance above: this carries the weather's fog colour
     // when a host drives it, so it is per-frame state rather than a user preference.
     RTX_OPTION_ARGS("rtx.volumetrics", Vector3, singleScatteringAlbedo, Vector3(0.999f, 0.999f, 0.999f),

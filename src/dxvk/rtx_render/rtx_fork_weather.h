@@ -43,8 +43,8 @@ namespace dxvk { namespace fork_weather {
 } }
 
 // ---------------------------------------------------------------------------
-// Field table X-macro - THE single source of truth for the 67 weather fields
-// (17 cloud + 5 atmosphere + 4 sky/moon mood + 30 volumetric + 11 precipitation).
+// Field table X-macro - THE single source of truth for the 71 weather fields
+// (17 cloud + 5 atmosphere + 4 sky/moon mood + 34 volumetric + 11 precipitation).
 // Every consumer
 // (WeatherSnapshot members, the per-field descriptor table, the generated
 // ImGui panel, and the blend/read/write loops) is driven from here, so a field
@@ -126,6 +126,19 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,           0.85f, WK_Scalar, "Volumetric Fog", "Medium", "Fog Density Ref T (Night)",            0.004f, 0.996f, 0.005f, "%.3f") \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.40f, WK_Scalar, "Volumetric Fog", "Medium", "Fog Density Ref T (Underwater Day)",   0.004f, 0.996f, 0.005f, "%.3f") \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.40f, WK_Scalar, "Volumetric Fog", "Medium", "Fog Density Ref T (Underwater Night)", 0.004f, 0.996f, 0.005f, "%.3f") \
+  /* Measurement-distance day/night + underwater split (fork). The reference transmittance above answers    */ \
+  /* "how much light survives one measurement distance"; this answers "how long that distance is". Both are */ \
+  /* needed to place fog thickness, and only the transmittance half had a time-of-day split, so the         */ \
+  /* distance was pinned across the whole day and any value right at noon was wrong at midnight.            */ \
+  /*                                                                                                        */ \
+  /* 0 means "inherit transmittanceMeasurementDistanceMeters", which is what every preset ships, so adding   */ \
+  /* these changes nothing until one is dialled in and existing per-preset distance tuning keeps working.    */ \
+  /* The sentinel is resolved in readPresetValues, before any blending, because WK_Extinction lerps in       */ \
+  /* 1/distance space where a 0 would clamp to 1e-4 m and read as opaque mid-transition.                     */ \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f, WK_Extinction, "Volumetric Fog", "Medium", "Measure Dist (Day, 0=base)",             0.0f, 2000.0f, 5.0f, "%.0f") \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f, WK_Extinction, "Volumetric Fog", "Medium", "Measure Dist (Night, 0=base)",           0.0f, 2000.0f, 5.0f, "%.0f") \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f, WK_Extinction, "Volumetric Fog", "Medium", "Measure Dist (Underwater Day, 0=base)",   0.0f, 2000.0f, 5.0f, "%.0f") \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f, WK_Extinction, "Volumetric Fog", "Medium", "Measure Dist (Underwater Night, 0=base)", 0.0f, 2000.0f, 5.0f, "%.0f") \
   X(float,   volumetricAnisotropy,               0.0f,                            WK_Scalar,     "Volumetric Fog", "Medium",           "Anisotropy",                -1.0f,    1.0f,    0.01f,   "%.2f") \
   /* Precipitation (10) — rain / snow / blowing sand particles. Drives the       */ \
   /* rtx.weather.precipitation.* live options consumed by PrecipitationSystem    */ \
@@ -177,7 +190,7 @@ namespace dxvk { namespace fork_weather {
 #define WEATHER_PRESET_BIND_smoggy(type, name, def)        WEATHER_PRESET_RTX_OPTION_FOR(smoggy,        type, name, def);
 
 // ---------------------------------------------------------------------------
-// Per-preset value X-macros — one per archetype, 67 fields each, in the same
+// Per-preset value X-macros — one per archetype, 71 fields each, in the same
 // order as WEATHER_PRESET_FIELD_LIST. Fields not explicitly tuned use the
 // neutral default from WEATHER_PRESET_FIELD_LIST, which is also the canonical
 // field order — see that macro above rather than duplicating the list here.
@@ -241,6 +254,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.945f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.35f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.35f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - no precipitation */ \
   X(float,   precipitationIntensity,    0.0f                        ) \
   X(float,   precipitationFallSpeed,    8.0f                        ) \
@@ -312,6 +329,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.94f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.33f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.33f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - no precipitation */ \
   X(float,   precipitationIntensity,    0.0f                        ) \
   X(float,   precipitationFallSpeed,    8.0f                        ) \
@@ -383,6 +404,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.80f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.30f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.30f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - no precipitation (dry overcast) */ \
   X(float,   precipitationIntensity,    0.0f                        ) \
   X(float,   precipitationFallSpeed,    8.0f                        ) \
@@ -454,6 +479,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.85f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.32f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.32f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - no precipitation */ \
   X(float,   precipitationIntensity,    0.0f                        ) \
   X(float,   precipitationFallSpeed,    8.0f                        ) \
@@ -525,6 +554,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.89f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.22f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.22f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - barely-there mist drift, mostly there to make the fog feel wet */ \
   X(float,   precipitationIntensity,    0.06f                       ) \
   X(float,   precipitationFallSpeed,    3.0f                        ) \
@@ -596,6 +629,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.70f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.28f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.28f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - fine, slow, short streaks */ \
   X(float,   precipitationIntensity,    0.28f                       ) \
   X(float,   precipitationFallSpeed,    5.5f                        ) \
@@ -667,6 +704,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.95f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.25f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.25f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - heavy, fast, long slanted streaks */ \
   X(float,   precipitationIntensity,    0.80f                       ) \
   X(float,   precipitationFallSpeed,    9.5f                        ) \
@@ -740,6 +781,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.89f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.22f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.22f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - torrential; the streaks are the storm */ \
   X(float,   precipitationIntensity,    1.00f                       ) \
   X(float,   precipitationFallSpeed,    11.0f                       ) \
@@ -811,6 +856,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.70f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.30f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.30f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - slow tumbling flakes - no streak, high drag + turbulence is what makes them flutter */ \
   X(float,   precipitationIntensity,    0.45f                       ) \
   X(float,   precipitationFallSpeed,    1.1f                        ) \
@@ -882,6 +931,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.45f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.20f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.20f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - driven snow: wind dominates the fall direction */ \
   X(float,   precipitationIntensity,    1.00f                       ) \
   X(float,   precipitationFallSpeed,    2.2f                        ) \
@@ -953,6 +1006,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.50f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.25f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.25f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - blowing grit - almost horizontal, tinted, semi-transparent */ \
   X(float,   precipitationIntensity,    0.85f                       ) \
   X(float,   precipitationFallSpeed,    1.6f                        ) \
@@ -1024,6 +1081,10 @@ namespace dxvk { namespace fork_weather {
   X(float,   fogDensityReferenceTransmittanceNight,     0.60f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterDay,   0.25f) \
   X(float,   fogDensityReferenceTransmittanceUnderwaterNight, 0.25f) \
+  X(float,   transmittanceMeasurementDistanceMetersDay,             0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersNight,           0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterDay,   0.0f) \
+  X(float,   transmittanceMeasurementDistanceMetersUnderwaterNight, 0.0f) \
   /* Precipitation - no precipitation */ \
   X(float,   precipitationIntensity,    0.0f                        ) \
   X(float,   precipitationFallSpeed,    8.0f                        ) \
