@@ -311,7 +311,7 @@ namespace dxvk {
     bool mustUseGPU = drawCallState.getGeometryData().positionBuffer.mapPtr() == nullptr;
 
     // At some point, its more efficient to do these calculations on the GPU, this limit is somewhat arbitrary however, and might require better tuning...
-    const uint32_t kNumVerticesToProcessOnCPU = 256;
+    const uint32_t kNumVerticesToProcessOnCPU = 0;
 
     // Check we have appropriate CPU access
     const bool pendingGpuWrite = drawCallState.getGeometryData().positionBuffer.isPendingGpuWrite() ||
