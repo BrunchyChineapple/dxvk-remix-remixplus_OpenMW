@@ -66,12 +66,25 @@ int convertToThisFramePrefixSumID(int lastID, out int surfaceID, out int primiti
     return NEE_CACHE_INVALID_ID;
   }
   int surfaceIDLast, primitiveIDLast;
-  if (!NEECacheUtils.convertPrefixSumIDToID(lastID, LastPrimitiveIDPrefixSum, surfaceIDLast, primitiveIDLast))
+  // 0 for the surface count: this is the previous frame's prefix sum and RaytraceArgs carries no previous
+  // surface count, so the bound has to come from the buffer itself. Passing cb.surfaceCount here read past
+  // the end of it whenever the scene grew between frames.
+  if (!NEECacheUtils.convertPrefixSumIDToID(lastID, LastPrimitiveIDPrefixSum, 0, surfaceIDLast, primitiveIDLast))
   {
     return NEE_CACHE_INVALID_ID;
   }
 
+  // Translate the mapping's sentinel into this function's own, and leave the out-params at the invalid
+  // value they were initialised to. Both callers gate their use of surfaceID and primitiveID on the
+  // return value, so returning here is what keeps an unmapped surface from reaching
+  // calculateTriangleLightIntensity -- previously surfaceID was assigned before anything was known
+  // about it.
   int surfaceIDThis = NEECacheUtils.convertToCurrentSurfaceID(surfaceIDLast);
+  if (surfaceIDThis == int(SURFACE_INDEX_INVALID))
+  {
+    return NEE_CACHE_INVALID_ID;
+  }
+
   surfaceID = surfaceIDThis;
   primitiveID = primitiveIDLast;
 
@@ -355,7 +368,15 @@ void updateTriangleTask(NEECell cell, uint2 localIndex)
       uint newValue = data.x;
 
       int newSurfaceID, newPrimitiveID;
-      NEECacheUtils.convertPrefixSumIDToID(newPrefixSumID, PrimitiveIDPrefixSum, newSurfaceID, newPrimitiveID);
+      if (!NEECacheUtils.convertPrefixSumIDToID(newPrefixSumID, PrimitiveIDPrefixSum, cb.surfaceCount, newSurfaceID, newPrimitiveID))
+      {
+        // Discarding the result here meant an unresolvable ID left newSurfaceID as
+        // NEE_CACHE_INVALID_ID, and getSurfacePrimitiveCount below would index the prefix-sum buffer
+        // at 16,777,216 on every thread that hit one. Drop the candidate instead.
+        s_candidateList[i][localIndex.y] = uint2(NEE_CACHE_INVALID_ID, 0);
+        continue;
+      }
+
       int primitiveCount = NEECacheUtils.getSurfacePrimitiveCount(newSurfaceID, PrimitiveIDPrefixSum);
       int gab = min(cb.neeCacheArgs.triangleExplorationMaxRange, cb.neeCacheArgs.triangleExplorationRangeRatio * primitiveCount) * 
         cb.neeCacheArgs.triangleExplorationAcceptRangeRatio + 1;
@@ -421,10 +442,20 @@ void updateTriangleTask(NEECell cell, uint2 localIndex)
     int candidateID = localIndex.x;
     uint2 task = s_candidateList[candidateID][localIndex.y];
     int surfaceID, primitiveID;
-    NEECacheUtils.convertPrefixSumIDToID(task.x & 0xffffff, PrimitiveIDPrefixSum, surfaceID, primitiveID);
-    NEECandidate candidate = NEECandidate.create(surfaceID, primitiveID, max(1, task.x >> 24));
+    NEECandidate candidate;
+    if (NEECacheUtils.convertPrefixSumIDToID(task.x & 0xffffff, PrimitiveIDPrefixSum, cb.surfaceCount, surfaceID, primitiveID))
+    {
+      candidate = NEECandidate.create(surfaceID, primitiveID, max(1, task.x >> 24));
+      candidate.setSampleProbability(s_candidateLight[candidateID][localIndex.y]);
+    }
+    else
+    {
+      // Built with the invalid surface ID before, which consumers then used to index the surface
+      // buffer. NEECandidate has an invalid state for exactly this; use it so readers skip the slot.
+      candidate = NEECandidate.create(0u, 0u, 1u);
+      candidate.setInvalid();
+    }
 
-    candidate.setSampleProbability(s_candidateLight[candidateID][localIndex.y]);
     cell.setCandidate(candidateID, candidate);
   }
 }

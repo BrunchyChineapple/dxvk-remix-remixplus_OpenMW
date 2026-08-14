@@ -67,7 +67,9 @@ namespace dxvk {
       RemixGui::ComboWithKey<FrameGenerationType>::ComboEntries { {
           { FrameGenerationType::None, "Off",  "Frame generation disabled" },
           { FrameGenerationType::DLSS, "DLSS", "NVIDIA DLSS Frame Generation" },
-          { FrameGenerationType::FSR,  "FSR",  "AMD FSR Frame Generation" },
+          // FSR entry removed: fork_hooks::isFsrFrameGenEnabled is hard-disabled via
+          // kFsrFrameGenerationDisabled, so offering it here would select a path that cannot run.
+          // Restore both together.
       } }
     };
 
@@ -76,7 +78,8 @@ namespace dxvk {
       "Frame Generation",
       RemixGui::ComboWithKey<FrameGenerationType>::ComboEntries { {
           { FrameGenerationType::None, "Off", "Frame generation disabled" },
-          { FrameGenerationType::FSR,  "FSR", "AMD FSR Frame Generation" },
+          // FSR entry removed alongside the DLSS-capable list above; this was the AMD-hardware variant of
+          // the same selector, so with FSR frame generation hard-disabled it offers only Off.
       } }
     };
 
@@ -106,7 +109,13 @@ namespace dxvk {
       const bool wantFsrFg = (type == FrameGenerationType::FSR);
 
       DxvkDLFG::enable.setDeferred(wantDlfg);
-      DxvkFSRFrameGen::enable.setDeferred(wantFsrFg);
+      // Always false while FSR frame generation is disabled -- see kFsrFrameGenerationDisabled in
+      // rtx_fork_fsr_framegen.cpp. Leaving wantFsrFg wired here would let a stale
+      // rtx.frameGenerationType = FSR flip rtx.fsrfg.enable on, which is the option the dev menu reads back
+      // to decide what to display and which contributes to anyFrameGenerationEnabled() -- so the UI would
+      // report frame generation active on a path that returns early every frame.
+      DxvkFSRFrameGen::enable.setDeferred(false);
+      (void) wantFsrFg;
 
       // Matches what upstream's DLFG checkbox did: turning DLSS-G on forces
       // Reflex to Low Latency.
@@ -194,8 +203,11 @@ namespace dxvk {
       if (RtxOptions::frameGenerationType() == FrameGenerationType::None) {
         if (DxvkDLFG::enable()) {
           RtxOptions::frameGenerationType.setDeferred(FrameGenerationType::DLSS);
-        } else if (DxvkFSRFrameGen::enable()) {
-          RtxOptions::frameGenerationType.setDeferred(FrameGenerationType::FSR);
+        // The FSR reconciliation branch that stood here is removed while FSR frame generation is disabled.
+        // It existed to recover frameGenerationType from whichever backend reported itself enabled, but with
+        // DxvkFSRFrameGen::enable pinned false above it could only ever fire from a stale saved value -- and
+        // it would then write FSR back into frameGenerationType, re-selecting a path that returns early every
+        // frame. Restore it together with the combo entries and kFsrFrameGenerationDisabled.
         }
       }
 

@@ -214,6 +214,10 @@ private:
     std::vector<unsigned char> surfacesGPUData;
     std::vector<uint32_t> surfaceIndexMapping;
     uint32_t previousFrameSurfaceCount = 0; // Tracks last frame's surface count for mapping coverage
+    // High-water mark of the surface mapping buffer's element count. Monotonic, because the buffer is
+    // only ever grown and is bound over its whole allocation -- so every element it can expose has to be
+    // rewritten each frame, or a shrinking scene leaves live-looking indices from a larger one behind.
+    size_t surfaceMappingWrittenCount = 0;
   } uploadSurfaceDataFuncState;
 
   void buildBlases(Rc<DxvkContext> ctx, DxvkBarrierSet& execBarriers,

@@ -667,8 +667,12 @@ namespace dxvk {
   }
 
   bool OpacityMicromapManager::checkIsOpacityMicromapSupported(DxvkDevice& device) {
+    // The feature matters as much as the extension. Previously this checked only that the extension was
+    // present, which is why the whole path ran with the micromap feature disabled. If a device exposes the
+    // extension but not the feature, disable OMM rather than continue into undefined behaviour.
     bool isOpacityMicromapSupported = device.extensions().khrSynchronization2 &&
-                                      device.extensions().extOpacityMicromap;
+                                      device.extensions().extOpacityMicromap &&
+                                      device.features().extOpacityMicromapFeatures.micromap;
 
     if (RtxOptions::areValidationLayersEnabled() && isOpacityMicromapSupported) {
       Logger::warn(str::format("[RTX] Opacity Micromap vendor extension is not compatible with VK Validation Layers. Disabling Opacity Micromap extension."));

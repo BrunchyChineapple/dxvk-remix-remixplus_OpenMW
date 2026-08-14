@@ -338,6 +338,9 @@ namespace dxvk {
     DxvkExt nvDeviceDiagnosticCheckpoints     = { VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME,       DxvkExtMode::Optional };
     // NV-DXVK end
     DxvkExt nvRayTracingInvocationReorder     = { VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME,      DxvkExtMode::Optional };
+    // Required by a shader that declares SPV_NV_shader_subgroup_partitioned. Without it the partitioned
+    // subgroup operations in that shader are undefined. No feature struct exists for this extension.
+    DxvkExt nvShaderSubgroupPartitioned       = { VK_NV_SHADER_SUBGROUP_PARTITIONED_EXTENSION_NAME,         DxvkExtMode::Optional };
 
     // Opacity micromap
     DxvkExt khrSynchronization2               = { VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,                  DxvkExtMode::Optional };

@@ -60,6 +60,9 @@ namespace dxvk {
 
     // NV-DXVK start: opacity micromap
     VkPhysicalDeviceSynchronization2FeaturesKHR               khrSynchronization2;
+    // The micromap feature has to be enabled explicitly for VK_EXT_opacity_micromap to be usable. Enabling
+    // the extension is not sufficient, and without this every micromap call is undefined.
+    VkPhysicalDeviceOpacityMicromapFeaturesEXT                extOpacityMicromapFeatures;
     // NV-DXVK end
   };
 

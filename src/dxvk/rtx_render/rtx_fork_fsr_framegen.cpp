@@ -1269,7 +1269,31 @@ namespace dxvk {
 
   namespace fork_hooks {
 
+    // FSR frame generation is disabled in this project. Set kFsrFrameGenerationDisabled to false to restore it.
+    //
+    // Not deleted, and deliberately so: the implementation, its build entry and its UI stay intact, so this is
+    // one boolean to undo rather than a merge to reconstruct. What it does remove is any path by which the
+    // code can execute.
+    //
+    // Why it is disabled rather than tolerated: DLSS is the frame-generation path this host uses
+    // (rtx.frameGenerationType = 1 is FrameGenerationType::DLSS), and DLFG is what creates the presenter.
+    // FSR frame generation nonetheless gets constructed every launch because dxvk_objects.h holds it in an
+    // Active<T>, which builds its object eagerly in the device constructor -- so amd_fidelityfx_vk.dll is
+    // loaded and "FSR FG: DxvkFSRFrameGen created" is logged in a session that will never use it. Worse, it
+    // carries its own copy of the force-V-Sync-off logic that DLFG has, which makes two independent writers
+    // to the same option and made it genuinely unclear which frame-generation path was governing
+    // presentation while a whole-frame flicker was being diagnosed.
+    //
+    // The gate below already returned false for a DLSS session, so this changes no behaviour today. It exists
+    // so the answer stays no if frameGenerationType is ever set to FSR by a config, an environment variable,
+    // the API or the dev menu, and so that anyone reading the flicker history is not left wondering whether
+    // this path contributed.
+    constexpr bool kFsrFrameGenerationDisabled = true;
+
     bool isFsrFrameGenEnabled(DxvkDevice* device) {
+      if (kFsrFrameGenerationDisabled) {
+        return false;
+      }
       if (device == nullptr || RtxOptions::frameGenerationType() != FrameGenerationType::FSR) {
         return false;
       }

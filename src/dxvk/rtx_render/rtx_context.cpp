@@ -582,7 +582,8 @@ namespace dxvk {
         // Rate limited so a sustained stall reports its onset rather than every frame of it.
         const bool quiet = (frameId - s_lastReportedFrame) >= 30;
 
-        if (quiet && medianMs > 0.0 && elapsedMs > medianMs * 3.0 && elapsedMs > medianMs + 20.0) {
+        if (RtxOptions::ForkLogging::frameSpikes() && quiet && medianMs > 0.0
+            && elapsedMs > medianMs * 3.0 && elapsedMs > medianMs + 20.0) {
           s_lastReportedFrame = frameId;
 
           const auto& accelManager = getSceneManager().getAccelManager();

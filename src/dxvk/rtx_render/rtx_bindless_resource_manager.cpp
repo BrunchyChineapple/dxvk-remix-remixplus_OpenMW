@@ -29,6 +29,8 @@
 
 #include "../shaders/rtx/pass/common_binding_indices.h"
 #include "../dxvk_descriptor.h"
+// ONCE() lives here; included explicitly rather than relying on it arriving transitively.
+#include "../util/util_once.h"
 
 namespace dxvk {
 
@@ -56,14 +58,40 @@ namespace dxvk {
 
   template<VkDescriptorType Type, typename T, typename U>
   void BindlessResourceManager::createDescriptorSet(const Rc<DxvkContext>& ctx, const std::vector<U>& engineObjects, const T& dummyDescriptor) {
-    const size_t numDescriptors = std::max((size_t) 1, engineObjects.size()); // Must always leave 1 to have a valid binding set
-    assert(numDescriptors <= kMaxBindlessResources);
+    // Resolve the table before building the write: the tail clear below needs its high-water mark, and the
+    // write at the end has to go to the same table.
+    BindlessTable* table = nullptr;
+    if constexpr (Type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
+      table = m_tables[Table::Textures][currentIdx()].get();
+    } else if constexpr (Type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+      table = m_tables[Table::Buffers][currentIdx()].get();
+    } else if constexpr (Type == VK_DESCRIPTOR_TYPE_SAMPLER) {
+      table = m_tables[Table::Samplers][currentIdx()].get();
+    }
+
+    if (table == nullptr) {
+      static_assert(Type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || Type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || Type == VK_DESCRIPTOR_TYPE_SAMPLER, "Support for this descriptor type has not been implemented yet.");
+      return;
+    }
+
+    // Clamped, not just asserted. The assert compiles out of the shipping build and the layout is created
+    // with descriptorCount = kMaxBindlessResources, so a table that ever exceeded it would have
+    // vkUpdateDescriptorSets write past the end of the set.
+    const size_t numDescriptors = std::min(std::max((size_t) 1, engineObjects.size()), (size_t) kMaxBindlessResources); // Must always leave 1 to have a valid binding set
+    if (engineObjects.size() > kMaxBindlessResources) {
+      ONCE(Logger::err(str::format("BindlessTable: ", engineObjects.size(), " resources exceeds the ",
+                                   kMaxBindlessResources, " the descriptor set can hold; the excess will not raytrace.")));
+    }
 
     std::vector<T> descriptorInfos(numDescriptors);
     descriptorInfos[0] = dummyDescriptor; // we set the first descriptor to be a dummy (size is always at least 1) and overwrite it if there are valid engine objects
 
     uint32_t idx = 0;
     for (auto&& engineObject : engineObjects) {
+      if (idx >= descriptorInfos.size()) {
+        break;
+      }
+
       descriptorInfos[idx] = dummyDescriptor;
 
       if constexpr (Type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
@@ -92,10 +120,36 @@ namespace dxvk {
       ++idx;
     }
 
+    // Overwrite every slot this set ever held, not just the ones in use this frame.
+    //
+    // Anything above numDescriptors still holds the descriptor written the last time this set index came
+    // around, and PARTIALLY_BOUND makes reading it legal. Since the buffer table is rebuilt from scratch
+    // each frame and shrinks as objects page out, those stale slots can name a destroyed buffer -- which is
+    // the "Geometry Buffer, Destroyed = true" page fault this exists to prevent. Filling the tail with the
+    // dummy costs one longer write, and only by however much the table shrank.
+    // The live-resource count, before the dummy tail is appended below. This is what a buffer index has to
+    // be below to name a real resource, and it is what the stale-index check in uploadSurfaceData compares
+    // against -- the table can grow after this point, because instances are still being created when this
+    // runs.
+    if constexpr (Type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
+      m_lastWrittenCounts[Table::Textures] = engineObjects.size();
+    } else if constexpr (Type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+      m_lastWrittenCounts[Table::Buffers] = engineObjects.size();
+    } else if constexpr (Type == VK_DESCRIPTOR_TYPE_SAMPLER) {
+      m_lastWrittenCounts[Table::Samplers] = engineObjects.size();
+    }
+
+    size_t writeCount = numDescriptors;
+    if (table->highWaterMark > writeCount) {
+      descriptorInfos.resize(table->highWaterMark, dummyDescriptor);
+      writeCount = table->highWaterMark;
+    }
+    table->highWaterMark = std::max(table->highWaterMark, writeCount);
+
     VkWriteDescriptorSet descWrites;
     memset(&descWrites, 0, sizeof(descWrites));
     descWrites.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descWrites.descriptorCount = numDescriptors;
+    descWrites.descriptorCount = static_cast<uint32_t>(writeCount);
     descWrites.descriptorType = Type;
 
     if constexpr (std::is_same_v<T, VkDescriptorImageInfo>) {
@@ -104,19 +158,7 @@ namespace dxvk {
       descWrites.pBufferInfo = &descriptorInfos[0];
     }
 
-    switch (Type) {
-    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-      m_tables[Table::Textures][currentIdx()]->updateDescriptors(descWrites);
-      break;
-    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-      m_tables[Table::Buffers][currentIdx()]->updateDescriptors(descWrites);
-      break;
-    case VK_DESCRIPTOR_TYPE_SAMPLER:
-      m_tables[Table::Samplers][currentIdx()]->updateDescriptors(descWrites);
-      break;
-    default:
-      break;
-    }
+    table->updateDescriptors(descWrites);
   }
 
   void BindlessResourceManager::prepareSceneData(const Rc<DxvkContext> ctx, const std::vector<TextureRef>& rtTextures, const std::vector<RaytraceBuffer>& rtBuffers, const std::vector<Rc<DxvkSampler>>& samplers) {

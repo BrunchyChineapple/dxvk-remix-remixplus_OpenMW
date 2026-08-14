@@ -44,9 +44,52 @@ struct NEECacheUtils
     return projectedArea > 0 ? r2 / projectedArea : 0;
   }
 
+  // Three things can go wrong on the way through surfaceMapping, and none of them were checked.
+  //
+  // The index. lastFrameSurfaceID comes from a binary search over the *previous* frame's prefix sum,
+  // a separate buffer that grows independently of this one, so it can name a surface past the end of
+  // the mapping. robustBufferAccess turns a read past the descriptor into a zero rather than a fault,
+  // and zero is a perfectly plausible surface index -- so this failure is silent and presents as some
+  // unrelated object contributing light.
+  //
+  // The sentinel. The mapping holds SURFACE_INDEX_INVALID for a surface that no longer exists.
+  // visibility.slangh performs the same lookup and tests for it; this did not, and passed it on as an
+  // index. It is 0x1FFFFF, so `surfaces[]` at that index is far outside the array.
+  //
+  // The result's range. A live mapping always names a surface in this frame. A stale one -- the buffer
+  // tail, before the host began covering it with the sentinel -- did not have to, and callers reach
+  // `surfaces[]` and that surface's bindless geometry buffers with whatever comes back.
+  //
+  // GetDimensions is a truthful bound only because the host now writes the sentinel across the whole
+  // allocated extent, padding included; see the surface mapping buffer in AccelManager::uploadSurfaceData.
+  // A null buffer binds as zero elements, which rejects every index, which is the right answer.
+  //
+  // Reports failure as SURFACE_INDEX_INVALID, the sentinel this buffer already uses, rather than a
+  // negative value or NEE_CACHE_INVALID_ID -- the caller translates it into the NEE cache's own
+  // vocabulary. Mixing the two sentinels is how an invalid ID gets treated as a valid one.
   static int convertToCurrentSurfaceID(uint lastFrameSurfaceID)
   {
-    uint currentFrameSurfaceID = surfaceMapping[lastFrameSurfaceID];
+    uint numElements = 0;
+    uint stride = 0;
+    surfaceMapping.GetDimensions(numElements, stride);
+
+    if (lastFrameSurfaceID >= numElements)
+    {
+      return int(SURFACE_INDEX_INVALID);
+    }
+
+    const int currentFrameSurfaceID = surfaceMapping[lastFrameSurfaceID];
+
+    // The sentinel is 0x1FFFFF and cb.surfaceCount is far below it, so the range test alone would
+    // reject it. Both are stated because they are separate facts, and only one of them stays true if
+    // the mapping ever carries something other than a surface index.
+    if (currentFrameSurfaceID < 0
+        || currentFrameSurfaceID == int(SURFACE_INDEX_INVALID)
+        || currentFrameSurfaceID >= int(cb.surfaceCount))
+    {
+      return int(SURFACE_INDEX_INVALID);
+    }
+
     return currentFrameSurfaceID;
   }
 
@@ -62,20 +105,60 @@ struct NEECacheUtils
       return NEE_CACHE_INVALID_ID;
     }
     int prefixSum = PrimitiveIDPrefixSumBuffer[surfaceIndex];
-    return primitiveIndex + prefixSum;
+    int prefixSumID = primitiveIndex + prefixSum;
+
+    // A scene can hold more primitive IDs than this field can represent. AccelManager measures the
+    // total against NEE_PREFIX_SUM_ID_MAX_VALUE every frame and has reported it several times over in
+    // ordinary exteriors. The ID is packed into 24 bits downstream -- see the (range << 24) | prefixSumID
+    // encoding in update_nee_cache -- so a value at or above the reserved invalid value either aliases
+    // "invalid" or truncates into an unrelated ID that resolves to the wrong surface and triangle.
+    // Reporting it as invalid costs this sample and nothing else.
+    if (prefixSumID < 0 || prefixSumID > NEE_PREFIX_SUM_ID_MAX_VALUE)
+    {
+      return NEE_CACHE_INVALID_ID;
+    }
+
+    return prefixSumID;
   }
 
-  static bool convertPrefixSumIDToID(int prefixSumID, StructuredBuffer<uint> PrimitiveIDPrefixSumBuffer, out int surfaceID, out int primitiveID)
+  // searchSurfaceCount: how many surfaces the given buffer describes. Pass cb.surfaceCount for the current
+  // frame's prefix sum, or 0 for "derive it from the buffer" when no count is available -- as is the case for
+  // the previous frame's prefix sum, which has no counterpart in RaytraceArgs.
+  static bool convertPrefixSumIDToID(int prefixSumID, StructuredBuffer<uint> PrimitiveIDPrefixSumBuffer, int searchSurfaceCount, out int surfaceID, out int primitiveID)
   {
-    if (cb.surfaceCount == 0 || prefixSumID == -1)
+    surfaceID = NEE_CACHE_INVALID_ID;
+    primitiveID = NEE_CACHE_INVALID_ID;
+
+    // Clamp the search to the extent of the buffer actually passed in, not to this frame's surface count.
+    // This function is also called with the *previous* frame's prefix sum, which holds a different number of
+    // entries, and searching that one with the current count read past its end whenever the scene grew
+    // between frames. The prefix sum holds surfaceCount + 1 entries by construction -- the last element is
+    // the scene total -- so numElements - 1 is the highest surface the buffer can describe. Clamping here
+    // rather than trusting the caller makes an out-of-bounds read impossible.
+    uint numElements = 0;
+    uint stride = 0;
+    PrimitiveIDPrefixSumBuffer.GetDimensions(numElements, stride);
+
+    const int bufferSurfaceCount = int(numElements) - 1;
+    if (bufferSurfaceCount < 1)
     {
-      surfaceID = NEE_CACHE_INVALID_ID;
-      primitiveID = NEE_CACHE_INVALID_ID;
+      return false;
+    }
+
+    const int surfaceCount = (searchSurfaceCount <= 0)
+      ? bufferSurfaceCount
+      : min(searchSurfaceCount, bufferSurfaceCount);
+
+    // Rejecting only -1 was not enough. The reserved invalid value, a sentinel truncated to a
+    // narrower width, and an ID beyond the end of the prefix sum all fell through into the search
+    // below and came back as a plausible surface with a nonsense primitive.
+    if (prefixSumID < 0 || prefixSumID >= NEE_CACHE_INVALID_ID)
+    {
       return false;
     }
 
     int minSurfaceID = 0;
-    int maxSurfaceID = cb.surfaceCount - 1;
+    int maxSurfaceID = surfaceCount - 1;
     while (minSurfaceID < maxSurfaceID)
     {
       int midSurfaceID = (minSurfaceID + maxSurfaceID) / 2 + 1;
@@ -90,6 +173,19 @@ struct NEECacheUtils
     }
 
     surfaceID = minSurfaceID;
+
+    // The search guarantees the ID is not below this surface. It does not guarantee the ID is inside
+    // it: an ID past the last surface's end clamps to that surface, and primitiveID then lands beyond
+    // its triangle count. Callers fetch geometry with that pair, so the upper bound is checked here.
+    // The prefix sum carries surfaceCount + 1 entries -- the last is the scene total -- so indexing
+    // surfaceID + 1 is always in range.
+    if (uint(prefixSumID) >= PrimitiveIDPrefixSumBuffer[surfaceID + 1])
+    {
+      surfaceID = NEE_CACHE_INVALID_ID;
+      primitiveID = NEE_CACHE_INVALID_ID;
+      return false;
+    }
+
     int surfacePrefixSum = PrimitiveIDPrefixSumBuffer[surfaceID];
     primitiveID = prefixSumID - surfacePrefixSum;
     return true;
@@ -272,14 +368,34 @@ struct NEECacheUtils
       }
     }
 
-    // Clamp to valid range. After geometry re-indexing (BLAS rebuild), the
-    // candidate's base primitiveIndex may have been clamped to the surface
-    // edge while its range still extends beyond — causing out-of-bounds
-    // vertex reads, degenerate triangles, and zero radiance.
-    if (cb.neeCacheArgs.enableReshuffleResilience)
-    {
-      primitiveIndex = min(primitiveIndex, triangleCount - 1);
-    }
+    // Bound the primitive index unconditionally before it reaches getInteractions.
+    //
+    // This previously read:
+    //
+    //     if (cb.neeCacheArgs.enableReshuffleResilience)
+    //       primitiveIndex = min(primitiveIndex, triangleCount - 1);
+    //
+    // Two things were wrong with that.
+    //
+    // It was gated on a quality option. enableReshuffleResilience trades one frame of stale lighting for
+    // less flicker when geometry is re-indexed. Whether a geometry fetch stays inside its buffer is not a
+    // quality tradeoff, and with the option off this was the only bound on an index about to be used to
+    // read vertex data.
+    //
+    // It was also wrong when triangleCount is 0, which matters because the option defaults to true.
+    // primitiveIndex is non-negative on entry, so min(primitiveIndex, 0 - 1) is -1: the guard produced the
+    // out-of-bounds read it existed to prevent, and a negative index reads below the buffer base.
+    //
+    // triangleCount can be 0 here. It is the difference of two prefix-sum entries for a surface named by a
+    // cached candidate, and that surface may have been emptied or re-indexed since the candidate was
+    // written. It can also be wrong outright: the NEE cache packs (range << 24) | prefixSumID into one
+    // word, so once a scene's primitive ID total passes NEE_PREFIX_SUM_ID_MAX_VALUE the ID truncates on
+    // unpack and both halves describe a different surface than the one recorded. Heavy exteriors in this
+    // project reach 73.7M primitive IDs against a 16.7M limit, so this is a live condition.
+    //
+    // Clamping to 0 on an empty surface reads that surface's first triangle: in bounds, degenerate at
+    // worst, and the zero area it yields already contributes nothing. The cost is one NEE sample.
+    primitiveIndex = clamp(primitiveIndex, 0, max(triangleCount - 1, 0));
 
     RayInteraction rayInteracton;
     SurfaceInteraction surfaceInteraction;

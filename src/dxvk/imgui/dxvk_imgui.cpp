@@ -1787,6 +1787,29 @@ namespace dxvk {
       RemixGui::Checkbox("Hash Collision Detection", &HashCollisionDetectionOptions::enableObject());
       RemixGui::Checkbox("Validate CPU index data", &RtxOptions::validateCPUIndexDataObject());
 
+      // Fork instrumentation, mirroring the rtx.fork.log.* options.
+      //
+      // Here as well as in rtx.conf because a config file means a restart per change, and a restart is often
+      // what loses an intermittent fault. From the menu a stream can be switched on mid-session, the fault
+      // reproduced, and the stream switched off again.
+      //
+      // Outside the REMIX_DEVELOPMENT guard on purpose: this has to exist in the build that gets played,
+      // because that is the build that produces the reports.
+      if (RemixGui::CollapsingHeader("Fork Instrumentation (Logging)", collapsingHeaderClosedFlags)) {
+        ImGui::Indent();
+        ImGui::TextWrapped("Log streams this fork added. The high-volume ones default off -- switch one on, "
+                           "reproduce, switch it off. remix-dxvk.log prints this same set with the rtx.conf "
+                           "key for each at startup, so a log alone is enough to find these again later.");
+        RemixGui::Checkbox("Startup Manifest", &RtxOptions::ForkLogging::manifestObject());
+        RemixGui::Checkbox("Scatter Submit (high volume)", &RtxOptions::ForkLogging::scatterSubmitObject());
+        RemixGui::Checkbox("Replacement Mesh Lookups", &RtxOptions::ForkLogging::meshLookupsObject());
+        RemixGui::Checkbox("Replacement Material Lookups", &RtxOptions::ForkLogging::materialLookupsObject());
+        RemixGui::Checkbox("Heavy Asset Census", &RtxOptions::ForkLogging::heavyAssetsObject());
+        RemixGui::Checkbox("Frame Spikes", &RtxOptions::ForkLogging::frameSpikesObject());
+        RemixGui::Checkbox("NEE Primitive ID Overflow", &RtxOptions::ForkLogging::neeOverflowObject());
+        ImGui::Unindent();
+      }
+
 #ifdef REMIX_DEVELOPMENT
       if (RemixGui::CollapsingHeader("Resource Aliasing Query", collapsingHeaderClosedFlags)) {
         ImGui::Indent();

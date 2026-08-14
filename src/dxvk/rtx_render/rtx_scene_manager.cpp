@@ -171,6 +171,26 @@ namespace dxvk {
   }
 
   void SceneManager::initialize(Rc<DxvkContext> ctx) {
+    // Instrumentation manifest.
+    //
+    // The point of this is discoverability, not diagnostics. Every stream below can be switched on without a
+    // rebuild, but only if someone knows it exists -- and that knowledge otherwise lives with whoever wrote
+    // it. Printing the inventory into the log means any run, read by anyone, later, carries its own index of
+    // what can be turned on and how.
+    if (RtxOptions::ForkLogging::manifest()) {
+      const auto onOff = [](bool value) { return value ? "on" : "off"; };
+      Logger::info(str::format("[Remix instrumentation] ",
+        "scatterSubmit=", onOff(RtxOptions::ForkLogging::scatterSubmit()),
+        " meshLookups=", onOff(RtxOptions::ForkLogging::meshLookups()),
+        " materialLookups=", onOff(RtxOptions::ForkLogging::materialLookups()),
+        " heavyAssets=", onOff(RtxOptions::ForkLogging::heavyAssets()),
+        " frameSpikes=", onOff(RtxOptions::ForkLogging::frameSpikes()),
+        " neeOverflow=", onOff(RtxOptions::ForkLogging::neeOverflow())));
+      Logger::info("[Remix instrumentation] set any of the above with rtx.fork.log.<name> = True in rtx.conf "
+                   "-- no rebuild needed. Host-side streams (per-material and per-texture identity lines, "
+                   "scene summaries, probe quad) are in settings.cfg [Remix] and the launcher's Testing tab.");
+    }
+
     ScopedCpuProfileZone();
     m_pReplacer->initialize(ctx);
   }
@@ -2845,7 +2865,8 @@ namespace dxvk {
       static uint32_t s_lastDeferred = ~0u;
       const size_t liveCells = m_currentFrameTerrainCells.size();
 
-      if (submitted != s_lastSubmitted || liveCells != s_lastCells || deferred != s_lastDeferred) {
+      if (RtxOptions::ForkLogging::scatterSubmit()
+          && (submitted != s_lastSubmitted || liveCells != s_lastCells || deferred != s_lastDeferred)) {
         s_lastSubmitted = submitted;
         s_lastCells = liveCells;
         s_lastDeferred = deferred;

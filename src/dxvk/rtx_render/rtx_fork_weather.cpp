@@ -658,7 +658,46 @@ namespace dxvk { namespace fork_weather { namespace {
   }
   WEATHER_PRESET_OBJPTR(transmittanceMeasurementDistanceMeters, float,   presetFogDistanceObj)
   WEATHER_PRESET_OBJPTR(singleScatteringAlbedo,                 Vector3, presetFogTintObj)
+  // The Day/Night reference-transmittance pair, which had no derived control of its own.
+  //
+  // "Fog Density" above drives transmittanceMeasurementDistanceMeters, a single value that applies at every
+  // hour. These two are the pair the runtime actually collapses by sun elevation each frame:
+  //
+  //     todDayFactor = saturate((sunElevationDeg + 5) / 15)
+  //     fogDensityReferenceTransmittance = lerp(Night, Day, todDayFactor)
+  //
+  // Without them on the panel the only reachable thickness control was time-invariant, so a value chosen to
+  // look right at midnight was necessarily wrong at noon and the reverse -- the two could not be balanced
+  // against each other at all. They exist as options and are written per preset in the conf; they simply had
+  // no widget.
+  WEATHER_PRESET_OBJPTR(fogDensityReferenceTransmittanceDay,   float, presetFogDayObj)
+  WEATHER_PRESET_OBJPTR(fogDensityReferenceTransmittanceNight, float, presetFogNightObj)
+  WEATHER_PRESET_OBJPTR(fogDensityReferenceTransmittanceUnderwaterDay,   float, presetFogUwDayObj)
+  WEATHER_PRESET_OBJPTR(fogDensityReferenceTransmittanceUnderwaterNight, float, presetFogUwNightObj)
 #undef WEATHER_PRESET_OBJPTR
+
+  // Reference transmittance is the fraction of light still arriving at the reference distance, so it runs the
+  // opposite way from thickness: 1 is clear and 0 is opaque. Presented as density to match the dial above,
+  // because two adjacent controls that disagree about which end is "more fog" is its own trap.
+  //
+  // Not exp-mapped like Fog Density. That one converts a distance in metres, where perceptual spacing is
+  // heavily back-loaded; this is already a normalised 0..1 ratio, and the useful band for a clear Morrowind
+  // night sits around 0.96, so a straight linear inversion keeps the numbers legible against the conf values.
+  float fogTransmittanceToDensity(float t) { return saturate(1.0f - t); }
+  float fogDensityToTransmittance(float d) { return saturate(1.0f - d); }
+
+  /// Draws one reference-transmittance row as a density dial. Returns true if it rendered.
+  bool renderFogSplitRow(RtxOption<float>* obj, const char* label, const char* tip, const char* filter) {
+    if (!obj || !matchesFilter(label, filter)) {
+      return false;
+    }
+    float density = fogTransmittanceToDensity(obj->get());
+    if (ImGui::SliderFloat(label, &density, 0.0f, 1.0f, "%.3f")) {
+      obj->setDeferred(fogDensityToTransmittance(density));
+    }
+    RemixGui::SetTooltipToLastWidgetOnHover(tip);
+    return true;
+  }
 
   // Renders the derived Fog Density + Fog Tint widgets for one preset, honoring
   // the panel's name filter. Returns true if it rendered anything.
@@ -687,6 +726,28 @@ namespace dxvk { namespace fork_weather { namespace {
         "Transmittance Color, is what tints the fog you actually see.");
       rendered = true;
     }
+
+    // The time-of-day split. Separate from Fog Density above because that one is a single figure applied at
+    // every hour, whereas these are the two ends the runtime interpolates between by sun elevation.
+    rendered |= renderFogSplitRow(presetFogDayObj(presetIdx), "Fog Density (Day)",
+      "Thickness with the sun at or above +10 degrees. 0 = clear, 1 = opaque.\n"
+      "This and the Night value are blended by sun elevation every frame:\n"
+      "  factor = saturate((sunElevation + 5) / 15)\n"
+      "so Night holds at or below -5 degrees and Day from +10, with a smooth twilight ramp between.\n"
+      "Tune this at noon and Night at midnight; neither affects the other's hour.", filter);
+
+    rendered |= renderFogSplitRow(presetFogNightObj(presetIdx), "Fog Density (Night)",
+      "Thickness with the sun at or below -5 degrees. 0 = clear, 1 = opaque.\n"
+      "Independent of the Day value above, so a night tuned for a light haze does not thicken\n"
+      "the following noon. A clear Morrowind night sits near 0.04 density (0.96 transmittance).", filter);
+
+    rendered |= renderFogSplitRow(presetFogUwDayObj(presetIdx), "Fog Density (Underwater Day)",
+      "Thickness below the water plane during the day, with its own Day/Night pair and its own\n"
+      "collapse. The shader selects it per froxel below the plane, so it does not affect air.", filter);
+
+    rendered |= renderFogSplitRow(presetFogUwNightObj(presetIdx), "Fog Density (Underwater Night)",
+      "Thickness below the water plane at night. Same split and collapse as the air pair.", filter);
+
     return rendered;
   }
 

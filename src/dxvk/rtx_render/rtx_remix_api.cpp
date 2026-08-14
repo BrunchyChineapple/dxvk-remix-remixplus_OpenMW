@@ -2395,16 +2395,42 @@ namespace {
       }
       D3DPRESENT_PARAMETERS presentParams{};
       hr = swapchain->GetPresentParameters(&presentParams);
+
+      // GetSwapChain above AddRefs, and this runs once per present. The reference was never released on any
+      // path, so the swapchain's refcount grew by one every frame -- tens of thousands over a session. That
+      // pins the swapchain and its backbuffers so they can never be released, and it also means the ResetEx
+      // below could not succeed after the first frame: D3D9 rejects a reset while application-held swapchain
+      // references are outstanding. Since the result was discarded, that failed silently. Release it here,
+      // before the reset, and read from the local copy of the parameters.
+      swapchain->Release();
+      swapchain = nullptr;
+
       if (FAILED(hr)) {
         return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
       }
 
       // reset swapchain if window has changed
-      if (presentParams.BackBufferWidth != windowWidth && //
+      //
+      // Was `&&`, which only reset when *both* dimensions differed -- a resolution change that keeps one
+      // axis, a DPI change or a window snap left the swapchain at its old size indefinitely. The comment
+      // above is the intent: either dimension changing means the window changed.
+      if (presentParams.BackBufferWidth != windowWidth ||
           presentParams.BackBufferHeight != windowHeight) {
         presentParams.BackBufferWidth = windowWidth;
         presentParams.BackBufferHeight = windowHeight;
-        remixDevice->ResetEx(&presentParams, nullptr);
+
+        // Checked rather than discarded. Combined with the release above this path can now actually
+        // succeed, where before it silently could not, so a failure is worth hearing about exactly once.
+        const HRESULT resetHr = remixDevice->ResetEx(&presentParams, nullptr);
+        if (FAILED(resetHr)) {
+          static bool s_loggedResetFailure = false;
+          if (!s_loggedResetFailure) {
+            s_loggedResetFailure = true;
+            dxvk::Logger::err(dxvk::str::format(
+              "remixapi_Present: swapchain ResetEx to ", windowWidth, "x", windowHeight,
+              " failed, hr=", resetHr));
+          }
+        }
       }
     }
 

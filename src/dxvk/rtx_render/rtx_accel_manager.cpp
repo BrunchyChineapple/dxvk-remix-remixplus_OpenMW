@@ -1176,10 +1176,12 @@ namespace dxvk {
             positions += str::format(" (", m[0][3], ",", m[1][3], ",", m[2][3], ")");
           }
 
-          Logger::info(str::format("[heavy] ", heavy.primitives, " tris  ",
-            heavy.instances.size(), " instances  geometry=0x", std::hex,
-            pair.first->modifiedGeometryData.hashes[HashComponents::VertexPosition], std::dec,
-            "  world:", positions));
+          if (RtxOptions::ForkLogging::heavyAssets()) {
+            Logger::info(str::format("[heavy] ", heavy.primitives, " tris  ",
+              heavy.instances.size(), " instances  geometry=0x", std::hex,
+              pair.first->modifiedGeometryData.hashes[HashComponents::VertexPosition], std::dec,
+              "  world:", positions));
+          }
         }
       }
     }
@@ -1213,7 +1215,8 @@ namespace dxvk {
       static uint64_t s_reportedPeak = 0;
       const bool overNeeLimit = totalPrimitiveIDOffset > NEE_PREFIX_SUM_ID_MAX_VALUE;
 
-      if (overNeeLimit && totalPrimitiveIDOffset > s_reportedPeak) {
+      if (RtxOptions::ForkLogging::neeOverflow() && overNeeLimit
+          && totalPrimitiveIDOffset > s_reportedPeak) {
         s_reportedPeak = totalPrimitiveIDOffset;
 
         Logger::err(str::format("DxvkRaytrace: scene primitive ID total ", totalPrimitiveIDOffset,
@@ -1282,6 +1285,29 @@ namespace dxvk {
         Logger::info(str::format("DxvkRaytrace: scene primitive ID total back within limits (",
           totalPrimitiveIDOffset, " <= ", NEE_PREFIX_SUM_ID_MAX_VALUE, ")"));
         s_reportedPeak = 0;
+      }
+
+      // Report how close a run gets even when it never crosses the limit.
+      //
+      // The report above only fires above the limit. That made a clean session indistinguishable between
+      // "peaked at 2M primitive IDs" and "peaked at 16.7M and only just held", so a run that produced no
+      // lines could not confirm whether the index path had been stressed at all -- and a clean run with an
+      // unexercised code path is not evidence that the path is fixed.
+      //
+      // Bucketed at a quarter of the limit and only on a rising peak, so a run contributes at most four
+      // lines before the detailed over-limit report takes over.
+      if (RtxOptions::ForkLogging::neeOverflow() && !overNeeLimit) {
+        static uint64_t s_reportedApproachBucket = 0;
+        constexpr uint64_t kApproachBucket = static_cast<uint64_t>(NEE_PREFIX_SUM_ID_MAX_VALUE) / 4;
+        const uint64_t approachBucket = static_cast<uint64_t>(totalPrimitiveIDOffset) / kApproachBucket;
+
+        if (approachBucket > s_reportedApproachBucket) {
+          s_reportedApproachBucket = approachBucket;
+          Logger::info(str::format("DxvkRaytrace: scene primitive ID peak ", totalPrimitiveIDOffset,
+            " (", (static_cast<uint64_t>(totalPrimitiveIDOffset) * 100) / NEE_PREFIX_SUM_ID_MAX_VALUE,
+            "% of the ", NEE_PREFIX_SUM_ID_BIT_COUNT, "-bit NEE cache limit ", NEE_PREFIX_SUM_ID_MAX_VALUE,
+            "), ", m_reorderedSurfaces.size(), " surfaces."));
+        }
       }
     }
 
@@ -1910,9 +1936,109 @@ namespace dxvk {
     std::size_t dataOffset = 0;
     surfacesGPUData.resize(surfacesGPUSize);
 
+    // What the shaders can actually resolve this frame.
+    //
+    // Deliberately the count the bindless descriptors were written with, not the table's current size. The
+    // descriptor set is built in SceneManager before view-model and player-model instances are created, and
+    // those register geometry buffers of their own -- so by the time surfaces are uploaded the table can be
+    // longer than the set. An index in that gap is in range of the table and past the end of the set, and
+    // resolves to the dummy descriptor. Comparing against the table size cannot see that case, which is why
+    // the first version of this check reported nothing.
+    const size_t bufferTableSize =
+      ctx->getCommonObjects()->getSceneManager().getBufferTable().size();
+    const size_t bufferBindlessCount =
+      ctx->getCommonObjects()->getSceneManager().getBindlessResourceManager().getLastWrittenCount(
+        BindlessResourceManager::Table::Buffers);
+
+    // Reported on its own, because it does not need a fault to be informative: if the table grows after the
+    // descriptors are written, every surface registered in the gap reads the dummy, and this line says so on
+    // a healthy run.
+    if (bufferBindlessCount != 0 && bufferTableSize > bufferBindlessCount) {
+      ONCE(Logger::err(str::format(
+        "DxvkRaytrace: the bindless buffer table grew from ", bufferBindlessCount,
+        " entries (written into the descriptor set) to ", bufferTableSize,
+        " by the time surfaces were uploaded. Indices in that gap resolve to the unbound dummy buffer;"
+        " the descriptor set is built before view-model and player-model instances are created.")));
+    }
+
     for (uint32_t i = 0; i < m_reorderedSurfaces.size(); ++i) {
       const auto& currentInstance = *m_reorderedSurfaces[i];
       RtSurface& currentSurface = m_reorderedSurfaces[i]->surface;
+
+      // Does every buffer index on this surface actually name an entry in that table?
+      //
+      // An index at or past the table size resolves to whatever the bindless set holds in that slot, which
+      // since the descriptor-tail fix is the shared "Unbound Buffer" -- 65,536 bytes, allocated at startup.
+      // A shader reading it with a real vertex offset runs off the end, and that is what five unattributable
+      // page faults look like: addresses one 0x10000 boundary past a low, deterministic base, contained by no
+      // recorded region and owned by no resource the driver still knows about.
+      //
+      // Checked here because this is the last point where the index is still attributable to a surface and a
+      // BlasEntry. On the GPU it is only an address, which is precisely why those five dumps said nothing.
+      {
+        static uint32_t s_staleIndexReports = 0;
+        constexpr uint32_t kMaxStaleIndexReports = 8;
+
+        // Pointers rather than copies, so a stale index can be rewritten in place below and not merely
+        // reported. The names are kept alongside for the diagnostic.
+        const std::pair<const char*, uint32_t*> surfaceBufferIndices[] = {
+          { "position",         &currentSurface.positionBufferIndex },
+          { "previousPosition", &currentSurface.previousPositionBufferIndex },
+          { "normal",           &currentSurface.normalBufferIndex },
+          { "texcoord",         &currentSurface.texcoordBufferIndex },
+          { "index",            &currentSurface.indexBufferIndex },
+          { "color0",           &currentSurface.color0BufferIndex },
+        };
+
+        for (const auto& indexEntry : surfaceBufferIndices) {
+          // kSurfaceInvalidBufferIndex is the legitimate "this surface has no such buffer" value and the
+          // shaders test for it explicitly, so it is not a stale index.
+          // Against the written count, not the table size -- see the comment where both are computed.
+          const size_t resolvableCount = bufferBindlessCount != 0 ? bufferBindlessCount : bufferTableSize;
+          if (*indexEntry.second == kSurfaceInvalidBufferIndex || *indexEntry.second < resolvableCount) {
+            continue;
+          }
+
+          if (s_staleIndexReports < kMaxStaleIndexReports) {
+            ++s_staleIndexReports;
+
+            const BlasEntry* staleBlas = currentInstance.getBlas();
+            const XXH64_hash_t stalePositionHash = staleBlas != nullptr
+              ? staleBlas->modifiedGeometryData.hashes[HashComponents::VertexPosition]
+              : kEmptyHash;
+
+            Logger::err(str::format(
+              "DxvkRaytrace: surface ", i, " carries a stale ", indexEntry.first, " buffer index ",
+              *indexEntry.second, " but the descriptor set holds only ", bufferBindlessCount,
+              " live entries (table size ", bufferTableSize,
+              ") -- rewritten to the invalid-buffer sentinel so the shaders skip it."
+              " blasEntry=0x", std::hex, reinterpret_cast<uintptr_t>(staleBlas),
+              " positionHash=0x", stalePositionHash, std::dec,
+              " (", s_staleIndexReports, " of ", kMaxStaleIndexReports, ")"));
+          }
+
+          // Rewrite the index rather than only reporting it.
+          //
+          // This block detected the stale index and then let it through unchanged. An index past the written
+          // count resolves to the unbound dummy buffer, so the surface reads whatever that holds and, per the
+          // message above, can fault past its end -- geometry drawn from the wrong buffer at best, a device
+          // loss at worst. kSurfaceInvalidBufferIndex is the value the shaders already test for explicitly to
+          // mean "this surface has no such buffer", so writing it here routes a stale index down a path that
+          // is checked instead of one that is not.
+          //
+          // The observed case is a scene shrinking: indices around 4107 survive into a frame whose table
+          // holds 1002 entries, which is what a cell change does to the bindless set. That the geometry these
+          // surfaces point at is gone is the actual defect, and it is upstream of here -- the runtime's own
+          // HEAD commit, "hold external mesh geometry a few frames after destroy", is work on the same
+          // lifetime problem. This does not fix that. It makes the consequence a missing buffer the shaders
+          // handle rather than an out-of-bounds read they cannot.
+          //
+          // Deliberately unconditional and not behind an option: whether a descriptor index is inside its
+          // table is not a quality setting, and the reporting above is already capped at 8 lines while this
+          // has to hold for every surface in every frame.
+          *indexEntry.second = kSurfaceInvalidBufferIndex;
+        }
+      }
 
       // For PointInstancer entries beyond the first, do nothing.  The GPU culling shader will 
       // patch per-instance transforms and set per-instance customInstanceIndex later.
@@ -1948,8 +2074,59 @@ namespace dxvk {
 
     ctx->writeToBuffer(m_surfaceBuffer, 0, surfacesGPUData.size(), surfacesGPUData.data());
 
-    // Allocate and initialize the surface mapping buffer
-    surfaceIndexMapping.resize(maxPreviousSurfaceIndex + 1);
+    // Allocate and initialize the surface mapping buffer.
+    //
+    // Sized to cover the whole extent the descriptor will expose, not just this frame's live entries.
+    // The buffer below is only ever grown -- the reallocation test is `info.size > ...->info().size` --
+    // and it is bound over its full allocated range, so every element past this frame's count still
+    // holds whatever was written there when the scene was last that large. Those are real surface
+    // indices from an older frame, which is worse than uninitialised: nothing downstream can tell one
+    // apart from a live mapping, because every `== SURFACE_INDEX_INVALID` test passes and the value
+    // names a surface that has since moved or gone. Reading one resolves the wrong surface, whose
+    // bindless buffer indices then fetch geometry that may already have been released.
+    //
+    // Same defect and the same remedy as the bindless descriptor tail handled above: keep a high-water
+    // mark and write the sentinel over everything up to it. Padding out to the aligned element count as
+    // well makes the written extent exactly equal to the allocated extent, which is what lets a shader
+    // bound an index with GetDimensions and get a truthful answer -- see convertToCurrentSurfaceID.
+    const size_t liveMappingCount = static_cast<size_t>(maxPreviousSurfaceIndex) + 1;
+    const size_t mappingStride = sizeof(surfaceIndexMapping[0]);
+    const size_t alignedMappingCount = align(liveMappingCount * mappingStride, kBufferAlignment) / mappingStride;
+    auto& surfaceMappingWrittenCount = uploadSurfaceDataFuncState.surfaceMappingWrittenCount;
+    surfaceMappingWrittenCount = std::max(surfaceMappingWrittenCount, alignedMappingCount);
+
+    // Report the size of the window this closed, because otherwise the change is an assertion rather
+    // than a measurement. kBufferAlignment is 64 KiB, so the descriptor exposes at least 16,384 int32
+    // elements no matter how few surfaces the scene has -- and the old code wrote only the live ones.
+    // Everything between the two counts was readable as a surface index and was never written by
+    // anything. The number says how much of the buffer that was; it does not say whether an index ever
+    // landed in it, which would need a GPU-side counter.
+    //
+    // Reported on each new peak in the live count rather than once, and this is the difference between a
+    // useful number and a misleading one: a ONCE fired on the first frame, where the live count is 1
+    // because there is no previous frame to map from, and reported a 16,383-element window that is true
+    // of the menu and of nothing else. The peak converges on the smallest real window, which is the
+    // figure worth having. Capped, because the peak climbs a handful of times and then stops.
+    {
+      static size_t s_peakLiveMappingCount = 0;
+      static uint32_t s_mappingReports = 0;
+      constexpr uint32_t kMaxMappingReports = 6;
+
+      if (liveMappingCount > s_peakLiveMappingCount && s_mappingReports < kMaxMappingReports) {
+        s_peakLiveMappingCount = liveMappingCount;
+        ++s_mappingReports;
+
+        Logger::info(str::format(
+          "DxvkRaytrace: surface mapping covers ", surfaceMappingWrittenCount,
+          " elements against a new peak of ", liveMappingCount, " live surfaces, leaving ",
+          surfaceMappingWrittenCount - liveMappingCount,
+          " written with SURFACE_INDEX_INVALID. Previously only the live ones were written while the whole"
+          " extent stayed bound, so an index landing past them read whatever that memory held and resolved"
+          " a plausible but wrong surface (", s_mappingReports, " of ", kMaxMappingReports, ")"));
+      }
+    }
+
+    surfaceIndexMapping.resize(surfaceMappingWrittenCount);
     std::fill(surfaceIndexMapping.begin(), surfaceIndexMapping.end(), SURFACE_INDEX_INVALID);
     
     // Assign surface indices to instances that don't have one yet (i.e. those that
@@ -2226,7 +2403,16 @@ namespace dxvk {
     if (tlas.accelStructure == nullptr || sizeInfo.accelerationStructureSize > tlas.accelStructure->info().size) {
       ScopedGpuProfileZone(ctx, "buildTLAS_createAccelStructure");
       DxvkBufferCreateInfo info;
-      info.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      // SHADER_DEVICE_ADDRESS is required, not optional.
+      //
+      // vkGetAccelerationStructureDeviceAddressKHR requires the buffer the acceleration structure was placed
+      // on to carry VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+      // (VUID-vkGetAccelerationStructureDeviceAddressKHR-pInfo-09542). Without it the query is undefined: the
+      // value it returns need not be a usable address and need not be backed by any allocation. The pooled
+      // BLAS path sets this correctly; the TLAS did not, and the TLAS is the one object every ray tracing
+      // pass reaches through.
+      info.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                 | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
       info.stages = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
       info.access = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
       info.size = sizeInfo.accelerationStructureSize;

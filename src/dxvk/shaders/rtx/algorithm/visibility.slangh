@@ -51,7 +51,24 @@ vec3 handleVisibilityVertex<let VisibilityMode : uint>(Ray ray, RayHitInfo rayHi
       return vec3(1.0f);
     }
 
-    // Map the surface index from the previous frame to the current frame
+    // Map the surface index from the previous frame to the current frame.
+    //
+    // Bounded, because the index arrives from a 21-bit packed field on a hit against the previous
+    // frame's TLAS and can name a surface the mapping does not describe -- it is sized to the previous
+    // frame's surface count, and the hit carries no guarantee of agreeing with it. The result was
+    // already tested; the index was not, and robustBufferAccess makes that read return zero rather than
+    // fault, so it silently resolved surface 0 and attenuated the shadow ray by an unrelated surface's
+    // opacity. Out of range takes the same path as an unmapped surface, which is the documented safe
+    // direction.
+    uint surfaceMappingCount = 0;
+    uint surfaceMappingStride = 0;
+    surfaceMapping.GetDimensions(surfaceMappingCount, surfaceMappingStride);
+
+    if (rayInteraction.surfaceIndex >= surfaceMappingCount)
+    {
+      return vec3(1.0f);
+    }
+
     rayInteraction.surfaceIndex = surfaceMapping[rayInteraction.surfaceIndex];
 
     if (rayInteraction.surfaceIndex == SURFACE_INDEX_INVALID)

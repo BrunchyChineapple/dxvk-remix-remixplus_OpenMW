@@ -1,5 +1,12 @@
+// std::max, for clamping the swapchain image count in recreateSwapChain. Included explicitly for the same
+// reason as util_string below.
+#include <algorithm>
+
 #include "dxvk_device.h"
 #include "rtx_dlfg.h"
+// str::format, for the stale-signal diagnostic below. Included explicitly rather than relied on
+// transitively.
+#include "../../util/util_string.h"
 
 namespace {
   // 6x frame generation: 1 rendered frame + up to 5 interpolated frames
@@ -244,10 +251,29 @@ namespace dxvk {
     m_appRequestedImageCount = desc.imageCount;
 
     vk::PresenterDesc adjustedDesc = desc;
-    // Allocate only as many swapchain images as the configured multiplier needs (interpolated + 1 rendered),
-    // rather than always allocating the hardware maximum. Swapchain will be recreated if the user increases
-    // the multiplier at runtime (see acquireNextImage).
-    adjustedDesc.imageCount = m_ctx->dlfgInterpolatedFrameCount() + 1;
+    // Enough images for interpolation, but never fewer than the application asked for.
+    //
+    // This previously read `adjustedDesc.imageCount = m_ctx->dlfgInterpolatedFrameCount() + 1`, discarding
+    // desc.imageCount entirely -- the very value captured into m_appRequestedImageCount on the line above.
+    // dlfgInterpolatedFrameCount() is 0 whenever frame generation is not interpolating, and it is not
+    // interpolating on a main menu, a loading screen or a video: there is no motion to interpolate. So those
+    // screens got a swapchain of exactly one image.
+    //
+    // A single-image swapchain has nowhere to render except the image currently being scanned out, so every
+    // present overwrites the picture mid-scanout. That is a whole-screen flash rather than a geometry
+    // artefact, it repeats every frame for as long as interpolation stays off, and it is worst where the
+    // scene is cheapest and the frame rate highest -- which is a main menu exactly.
+    //
+    // It also explains the frame drops. The present thread rejects a frame whose
+    // interpolatedFrameCount + 1 exceeds m_info.imageCount by forcing VK_ERROR_OUT_OF_DATE_KHR, so the first
+    // frame that began interpolating after a swapchain sized while idle was dropped and the swapchain
+    // rebuilt. Any transition into interpolation cost a frame.
+    //
+    // Taking the maximum keeps the original intent -- do not blindly allocate the hardware maximum -- while
+    // guaranteeing the application's own buffering. acquireNextImage still cycles the backbuffer ring modulo
+    // m_appRequestedImageCount, so those two counts have to agree or the ring indexes images the swapchain
+    // does not have.
+    adjustedDesc.imageCount = std::max(desc.imageCount, m_ctx->dlfgInterpolatedFrameCount() + 1u);
     
     VkResult res = vk::Presenter::recreateSwapChain(adjustedDesc);
     if (res != VK_SUCCESS) {
@@ -369,7 +395,17 @@ namespace dxvk {
 
   void DxvkDLFGPresenter::synchronize(std::unique_lock<dxvk::mutex>& lock) {
     m_presentThread.condWorkConsumed.wait(lock, [this] { return m_presentQueue.empty(); });
-    m_pacerThread.condWorkConsumed.wait(lock, [this] { return m_pacerQueue.empty(); });
+
+    // The pacer queue is guarded by m_pacerThread.mutex, not the present-thread lock held here, and
+    // runPacerThread pops and notifies condWorkConsumed under that mutex. Waiting on it with the wrong
+    // lock left the predicate reading m_pacerQueue unsynchronised and, worse, provided no mutual
+    // exclusion against the notifier -- a notify arriving between the predicate check and the sleep was
+    // lost, blocking here forever while still holding m_presentThread.mutex and so wedging the present
+    // thread as well. recreateSwapChain calls this, so one unlucky swapchain rebuild was enough.
+    {
+      std::unique_lock<dxvk::mutex> pacerLock(m_pacerThread.mutex);
+      m_pacerThread.condWorkConsumed.wait(pacerLock, [this] { return m_pacerQueue.empty(); });
+    }
   }
 
   bool DxvkDLFGPresenter::swapchainAcquire(SwapchainImage& swapchainImage) {
@@ -585,6 +621,12 @@ namespace dxvk {
 
         PacerJob pacer;
 
+        // Whether the pacer job was queued, and therefore whether anything will signal the pacer
+        // semaphore for this frame. The waits and the counter advance below are both gated on it: a
+        // frame that could not submit its interpolation command list must not wait on signals that are
+        // never coming, and must not reserve timeline values nobody will reach.
+        bool pacerJobQueued = false;
+
         SwapchainImage interpolatedSwapchainImages[kDLFGMaxInterpolatedFrames];
         
         const auto& reflex = m_ctx->getCommonObjects()->metaReflex();
@@ -639,9 +681,12 @@ namespace dxvk {
         for (uint32_t fgInterpolateIndex = 0; fgInterpolateIndex < present.frameInterpolation.interpolatedFrameCount; fgInterpolateIndex++) {
           SwapchainImage& swapchainImage = interpolatedSwapchainImages[fgInterpolateIndex];
           if (!swapchainAcquire(swapchainImage)) {
-            // got an error, bail until it's handled
+            // Stop the loop rather than skip one frame. reset() has just taken the command list out of
+            // the recording state, and `continue` went on to call interpolateFrame for the remaining
+            // indices, recording into it regardless. The m_lastPresentStatus check below already skips
+            // submission, so breaking here loses nothing and records nothing invalid.
             commandList->reset();
-            continue;
+            break;
           }
 
           interpolateFrame(commandList, swapchainImage, present, fgInterpolateIndex);
@@ -694,7 +739,10 @@ namespace dxvk {
         // try to use present metering if enabled, fall back to CPU metering if it fails
         bool usePresentMetering = DxvkDLFG::enablePresentMetering();
         uint64_t pacerSemaphoreValue = kPacerDoNotWait;
-        VkSetPresentConfigNV presentMetering;
+        // Zero-initialised. presentConfigFeedback is read below to decide whether to fall back from
+        // hardware present metering to CPU pacing, but only sType, pNext and numFramesPerBatch were ever
+        // assigned -- so the pacing mode was being chosen from uninitialised stack.
+        VkSetPresentConfigNV presentMetering = {};
 
         if (usePresentMetering) {
           presentMetering.sType = VK_STRUCTURE_TYPE_SET_PRESENT_CONFIG_NV;
@@ -723,15 +771,33 @@ namespace dxvk {
           // we have to do this before present, since VK overlays may assume
           // it's safe to idle the queue during present, which would otherwise cause
           // the GPU to get stuck waiting on the pacer job
-          pacerSemaphoreValue = m_dlfgPacerSemaphoreValue;
+          if (pacer.lastCmdListFence == nullptr) {
+            // The interpolation command list was never submitted, so its fence was never assigned and
+            // there is nothing for the pacer to wait on. Queueing anyway made the pacer CPU-wait on an
+            // uninitialised handle. Present this frame unpaced instead.
+            pacerSemaphoreValue = kPacerDoNotWait;
+          } else {
+            pacerSemaphoreValue = m_dlfgPacerSemaphoreValue;
 
-          assert(pacer.lastCmdListFence != nullptr);
-          pacer.semaphoreSignalValue = pacerSemaphoreValue;
-          pacer.interpolatedFrameCount = present.frameInterpolation.interpolatedFrameCount;
-          {
-            std::unique_lock<dxvk::mutex> lock(m_pacerThread.mutex);
-            m_pacerQueue.push(pacer);
-            m_pacerThread.condWorkAvailable.notify_all();
+            pacer.semaphoreSignalValue = pacerSemaphoreValue;
+            pacer.interpolatedFrameCount = present.frameInterpolation.interpolatedFrameCount;
+
+            // Reserve the timeline values here, where they are committed, rather than after the presents
+            // below. Once this job is queued the pacer thread will signal semaphoreSignalValue ..
+            // +interpolatedFrameCount-1 regardless of what happens next, and the old increment sat past
+            // two `continue` paths -- a failed rendered-frame acquire and a failed rendered-frame
+            // present. Taking either left the counter behind the semaphore, so the following frame
+            // reserved values that were already signalled and called vkSignalSemaphore with a value at
+            // or below the current one, which the spec forbids and which desynchronises every later wait.
+            m_dlfgPacerSemaphoreValue += present.frameInterpolation.interpolatedFrameCount;
+
+            {
+              std::unique_lock<dxvk::mutex> lock(m_pacerThread.mutex);
+              m_pacerQueue.push(pacer);
+              m_pacerThread.condWorkAvailable.notify_all();
+            }
+
+            pacerJobQueued = true;
           }
         }
 
@@ -740,11 +806,13 @@ namespace dxvk {
         // (and in that case, pacerSemaphoreValue is the do-not-wait token for the CPU pacer)
         for (uint32_t fgInterpolateIndex = 1; fgInterpolateIndex < present.frameInterpolation.interpolatedFrameCount; fgInterpolateIndex++) {
           if (!submitPresent(interpolatedSwapchainImages[fgInterpolateIndex], present, pacerSemaphoreValue, nullptr)) {
-            // got an error, bail until it's handled
-            continue;
+            // Stop rather than skip. `continue` left pacerSemaphoreValue un-incremented, so the next
+            // interpolated frame waited on a value an earlier present had already consumed and the
+            // rendered-frame present below waited one value short of what the pacer signals.
+            break;
           }
 
-          if (!usePresentMetering) {
+          if (pacerJobQueued) {
             pacerSemaphoreValue++;
           }
         }
@@ -770,10 +838,11 @@ namespace dxvk {
           continue;
         }
 
-        pacerSemaphoreValue++;
-
-        if (!usePresentMetering) {
-          m_dlfgPacerSemaphoreValue += present.frameInterpolation.interpolatedFrameCount;
+        // m_dlfgPacerSemaphoreValue is advanced where the job is queued now, so this only walks the
+        // local cursor past the value the rendered-frame present waited on and re-checks that the two
+        // agree. Gated on the job existing: without one nothing waits and nothing is reserved.
+        if (pacerJobQueued) {
+          pacerSemaphoreValue++;
           assert(pacerSemaphoreValue == m_dlfgPacerSemaphoreValue);
         }
       } else {
@@ -821,7 +890,33 @@ namespace dxvk {
     uint64_t referenceTimestampQpc = 0;
     uint64_t referenceMaxDeviation = 0;
 
-    auto signalPresentSemaphore = [&](uint64_t value) {
+    // Bounded rather than ONCE: one stale signal at startup is a different bug from one per frame, and
+    // ONCE hid which. Only the pacer thread runs this, so a plain local is sufficient.
+    uint32_t staleSignalReports = 0;
+    constexpr uint32_t kMaxStaleSignalReports = 8;
+
+    auto signalPresentSemaphore = [&](uint64_t value, const char* site) {
+      // vkSignalSemaphore requires value to be strictly greater than the current counter. These values are
+      // reserved on the present thread and signalled here, across several early-exit paths, so a stale one
+      // is possible; issuing it is invalid usage and the driver may reject it, leaving whoever waits on the
+      // real value blocked forever. Skip instead, so the timeline only ever moves forward.
+      uint64_t currentValue = 0;
+      const VkResult queryRes = m_device->vkd()->vkGetSemaphoreCounterValue(
+        m_device->handle(), m_dlfgPacerSemaphore->handle(), &currentValue);
+
+      if (queryRes == VK_SUCCESS && currentValue >= value) {
+        // `site` says which of the three signalling paths produced it, which is what decides the
+        // diagnosis. See patch_pacer_diag.py for what each one implies.
+        if (staleSignalReports < kMaxStaleSignalReports) {
+          ++staleSignalReports;
+          Logger::warn(str::format(
+            "DxvkDLFGPresenter::runPacerThread: skipped a stale pacer signal from '", site,
+            "': requested=", value, " current=", currentValue, " behind_by=", currentValue - value,
+            " (", staleSignalReports, " of ", kMaxStaleSignalReports, ")"));
+        }
+        return;
+      }
+
       VkSemaphoreSignalInfo info;
       info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
       info.pNext = nullptr;
@@ -977,7 +1072,7 @@ namespace dxvk {
               // signal the present semaphore
               {
                 ScopedCpuProfileZoneN("DLFG pacer: signal semaphore");
-                signalPresentSemaphore(pacer.semaphoreSignalValue + frameIndex);
+                signalPresentSemaphore(pacer.semaphoreSignalValue + frameIndex, "paced");
               }
             } else {
               pacerActive = false;
@@ -998,7 +1093,7 @@ namespace dxvk {
       if (!pacerActive) {
         for (uint32_t frameIndex = 0; frameIndex < pacer.interpolatedFrameCount; frameIndex++) {
           ScopedCpuProfileZoneN("DLFG pacer (inactive): signal semaphore");
-          signalPresentSemaphore(pacer.semaphoreSignalValue + frameIndex);
+          signalPresentSemaphore(pacer.semaphoreSignalValue + frameIndex, "inactive");
         }
       }
 
@@ -1014,7 +1109,7 @@ namespace dxvk {
       PacerJob pacer = std::move(m_pacerQueue.front());
 
       for (uint32_t frameIndex = 0; frameIndex < pacer.interpolatedFrameCount; frameIndex++) {
-        signalPresentSemaphore(pacer.semaphoreSignalValue + frameIndex);
+        signalPresentSemaphore(pacer.semaphoreSignalValue + frameIndex, "drain");
       }
 
       m_pacerQueue.pop();

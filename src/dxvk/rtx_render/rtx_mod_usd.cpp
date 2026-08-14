@@ -61,6 +61,7 @@
 #include <src/usd-plugins/RemixParticleSystem/ParticleSystemAPI.h>
 #include "../../lssusd/usd_include_end.h"
 #include "../util/util_watchdog.h"
+#include "../util/util_env.h"
 
 #include "../../lssusd/particle_system_helpers_vec.h"
 #include "../../lssusd/game_exporter_common.h"
@@ -1106,6 +1107,23 @@ bool UsdMod::Impl::processReplacement(Args& args) {
       && args.meshes[0].categories.categoryExists.raw() == 0) {
     return false;
   }
+
+  // NV-DXVK start: empty replacement diagnostic
+  // Reaching here with no entries registers a replacement that draws nothing, so the
+  // original is suppressed and the surface disappears. That is silent otherwise, because
+  // an empty replacement is not an error, which makes a mod authored this way very hard
+  // to audit from the outside. Opt-in: only useful while auditing.
+  if (args.meshes.empty()) {
+    static const bool logEmptyReplacements =
+      !env::getEnvVar("DXVK_LOG_EMPTY_REPLACEMENTS").empty();
+    if (logEmptyReplacements) {
+      Logger::warn(str::format(
+        "[RTX-Replacement] empty replacement, original suppressed: ",
+        args.rootPrim.GetPrimPath().GetString()));
+    }
+  }
+  // NV-DXVK end
+
   return true;
 
 }

@@ -524,6 +524,16 @@ namespace dxvk {
     const bool bIsNewMat = (materialLookupHash != 0x0) && (m_pCap->materials.count(materialLookupHash) == 0);
     if (bIsNewMat) {
       captureMaterial(ctx, rtInstance, materialLookupHash, material, !rtInstance.surface.alphaState.isFullyOpaque);
+    } else if (materialLookupHash != 0x0 && !rtInstance.surface.alphaState.isFullyOpaque) {
+      // Opacity belongs to the instance's alpha state, but it is stored on a material shared by
+      // hash, so the first instance to reach the capturer must not decide it for every later user
+      // of that material. Materials are exported after the capture completes, so raising the flag
+      // on a later instance still reaches the file.
+      std::lock_guard lock(m_meshMutex);
+      const auto foundMaterial = m_pCap->materials.find(materialLookupHash);
+      if (foundMaterial != m_pCap->materials.end()) {
+        foundMaterial->second.lssData.enableOpacity = true;
+      }
     }
 
     bool bIsNewMesh = false;

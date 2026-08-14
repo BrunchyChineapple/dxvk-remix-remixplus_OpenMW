@@ -975,8 +975,11 @@ namespace fork_hooks {
     void renderStarsUI() {
       constexpr ImGuiSliderFlags sliderFlags = ImGuiSliderFlags_AlwaysClamp;
       if (ImGui::TreeNode("Stars")) {
+        // Step 0.01 with four decimals shown, not 0.1 with one. This option's tuned default is 0.5, so a
+        // 0.1 step gave five positions across the whole useful range and "%.1f" could not even display a
+        // value below 0.05. Darker skies than the ones this was ranged for need that band.
         RemixGui::DragFloat("Star Brightness", &RtxOptions::starBrightnessObject(),
-                            0.1f, 0.0f, 50.0f, "%.1f", sliderFlags);
+                            0.01f, 0.0f, 50.0f, "%.4f", sliderFlags);
         RemixGui::DragFloat("Star Density", &RtxOptions::starDensityObject(),
                             0.01f, 0.0f, 1.0f, "%.2f", sliderFlags);
         RemixGui::SetTooltipToLastWidgetOnHover("Threshold: 0 = all stars visible, 1 = no stars.");
@@ -1122,7 +1125,12 @@ namespace fork_hooks {
     RemixGui::SetTooltipToLastWidgetOnHover("Skybox Rasterization: Traditional skybox rendering\nNumos: Hillaire atmospheric scattering");
 
     if (RtxOptions::skyMode() == SkyMode::SkyboxRasterization) {
-      RemixGui::DragFloat("Sky Brightness", &RtxOptions::skyBrightnessObject(), 0.01f, 0.01f, FLT_MAX, "%.3f", sliderFlags);
+      // Floor is 0, not 0.01. A brightness control that cannot reach zero is a control with an arbitrary
+      // limit: 0.01 is a hundredth of this option's own default of 1.0, so a game darker than the one this
+      // range was chosen for runs out of slider before it runs out of scene. The step is 0.001 for the same
+      // reason -- at 0.01 the usable band below a hundredth was a single click wide, so the only reachable
+      // values were "off" and "ten times too bright".
+      RemixGui::DragFloat("Sky Brightness", &RtxOptions::skyBrightnessObject(), 0.001f, 0.0f, FLT_MAX, "%.4f", sliderFlags);
     } else {
       // Atmosphere Presets
       ImGui::Separator();

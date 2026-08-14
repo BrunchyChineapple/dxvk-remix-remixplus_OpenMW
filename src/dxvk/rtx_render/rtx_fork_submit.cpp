@@ -91,12 +91,12 @@ namespace fork_hooks {
       } else {
         s_missedHashes.insert(meshHash);
       }
-      if (shouldLog) {
+      if (shouldLog && RtxOptions::ForkLogging::meshLookups()) {
         Logger::info(str::format("[RTX-Replacement] mesh lookups ", lookupCount, ": ",
           s_hits.load(std::memory_order_relaxed), " bound a replacement; distinct meshes ",
           s_hitHashes.size(), " matched and ", s_missedHashes.size(), " did not"));
       }
-    } else if (shouldLog) {
+    } else if (shouldLog && RtxOptions::ForkLogging::meshLookups()) {
       Logger::info(str::format("[RTX-Replacement] mesh lookups ", lookupCount, ": ",
         s_hits.load(std::memory_order_relaxed),
         " bound a replacement (DXVK_RTX_REPLACEMENT_HASH_STATS=1 for the distinct-identity breakdown)"));
@@ -159,7 +159,7 @@ namespace fork_hooks {
 
     // Periodic rather than per-draw: this runs for every external draw, so anything per-call would drown
     // the log and cost more than the lookup.
-    if (lookupCount % 2000000 == 0) {
+    if (lookupCount % 2000000 == 0 && RtxOptions::ForkLogging::materialLookups()) {
       Logger::info(str::format("[RTX-Replacement] material lookups ", lookupCount,
         ": ", s_hitsByMaterialHash.load(std::memory_order_relaxed), " matched the material hash, ",
         s_hitsByAlbedoHash.load(std::memory_order_relaxed), " matched the albedo texture hash instead"));

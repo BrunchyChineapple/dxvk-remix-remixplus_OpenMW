@@ -104,6 +104,15 @@ void calcOpaqueSurfaceMaterialOpacity(
   default: // Note: Default path for Standard blend type
   case uint(BlendType::kAlpha):
     opacity = alphaOpacity;
+    // Note: Emission is scaled by alpha here for the same reason the emissive blend modes below scale it by
+    // alphaOpacity: a surface only covering part of its footprint should only emit that part of the light.
+    // Standard alpha blending was the one blend type that left emissiveBlendOverrideInfluence at the caller's
+    // initial 1.0, so an alpha-masked surface emitted uniformly across its whole polygon regardless of the
+    // mask -- an alpha-shaped wisp of smoke or steam rendered as a hard-edged rectangle at full brightness.
+    // Only genuinely alpha-blended surfaces reach this switch: fully opaque ones return early on
+    // surface.isFullyOpaque and alpha-tested cutouts on surface.isBlendingDisabled, so this cannot affect
+    // opaque geometry or cutouts.
+    emissiveBlendOverrideInfluence = alphaOpacity;
 
     break;
   case uint(BlendType::kAlphaEmissive):

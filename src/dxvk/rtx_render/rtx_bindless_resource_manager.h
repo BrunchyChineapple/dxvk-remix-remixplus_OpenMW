@@ -49,6 +49,16 @@ namespace dxvk {
 
     VkDescriptorSet getGlobalBindlessTableSet(Table type) const;
 
+    /// How many descriptors were written into \a type's set for the current frame.
+    ///
+    /// Not the same as the high-water mark, which only ever grows and so cannot say what this frame's set
+    /// contains. This is the number an index has to be below to name a real resource: anything at or above it
+    /// resolves to the dummy descriptor, because createDescriptorSet only writes up to this count from live
+    /// resources and fills the remainder with the dummy.
+    size_t getLastWrittenCount(Table type) const {
+      return m_lastWrittenCounts[type];
+    }
+
     VkDescriptorSetLayout getGlobalBindlessTableLayout(Table type) const {
       return m_tables[type][currentIdx()]->layout;
     }
@@ -64,6 +74,17 @@ namespace dxvk {
 
       VkDescriptorSetLayout layout = VK_NULL_HANDLE;
       VkDescriptorSet bindlessDescSet = VK_NULL_HANDLE;
+
+      // The largest descriptor count ever written to this set.
+      //
+      // The set is only rewritten for as many entries as the current frame has resources, and the layout
+      // opts into VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, so slots above that count keep whatever was
+      // written the last time this set index came around. The buffer table shrinks routinely -- it is
+      // rebuilt from scratch every frame -- so those slots can still name a buffer that has since been
+      // destroyed, and a shader reaching one faults on freed memory. Keeping the high-water mark lets
+      // createDescriptorSet overwrite the tail with the dummy descriptor and hold the invariant that no
+      // descriptor in the set outlives its resource.
+      size_t highWaterMark = 0;
 
       void createLayout(const VkDescriptorType type);
       void updateDescriptors(VkWriteDescriptorSet set);
@@ -81,6 +102,9 @@ namespace dxvk {
 
     uint32_t m_globalBindlessDescSetIdx = 0;
     uint32_t m_frameLastUpdated = UINT_MAX;
+
+    /// Live resource count written into each table this frame. See getLastWrittenCount.
+    size_t m_lastWrittenCounts[Table::Count] = {};
 
 
     uint32_t currentIdx() const {

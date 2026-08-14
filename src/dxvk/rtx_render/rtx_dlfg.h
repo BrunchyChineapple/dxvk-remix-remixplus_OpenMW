@@ -187,10 +187,14 @@ namespace dxvk {
     std::queue<PresentJob> m_presentQueue;
 
     struct PacerJob {
-      uint32_t dlfgQueryIndex;
-      VkFence lastCmdListFence;
-      uint64_t semaphoreSignalValue;    // signal value for the first interpolated frame
-      uint32_t interpolatedFrameCount;  // number of consecutive signals to emit, each one increments the signal value by 1
+      // Initialised, because runPresentThread declares one per frame as `PacerJob pacer;` and only fills
+      // lastCmdListFence inside its success path. A failed swapchain acquire skipped that assignment and
+      // the job was still queued, handing the pacer thread an uninitialised VkFence to wait on -- guarded
+      // by nothing but an assert(), which is not compiled into the shipping release build.
+      uint32_t dlfgQueryIndex = 0;
+      VkFence lastCmdListFence = nullptr;
+      uint64_t semaphoreSignalValue = 0;    // signal value for the first interpolated frame
+      uint32_t interpolatedFrameCount = 0;  // number of consecutive signals to emit, each one increments the signal value by 1
     };
     
     struct SwapchainImage {
@@ -219,7 +223,16 @@ namespace dxvk {
     void createBackbuffers();
     
     Rc<RtxSemaphore> m_dlfgPacerSemaphore = nullptr;
-    uint64_t m_dlfgPacerSemaphoreValue = 0;
+
+    // Starts at 1, not 0.
+    //
+    // A timeline semaphore is created with its counter at 0, and vkSignalSemaphore requires the new value
+    // to be strictly greater than the current one. Starting here at 0 meant the first pacer job reserved
+    // value 0 and then tried to signal it, which is invalid and cannot ever succeed -- and the waiter for
+    // value 0 was already satisfied, so the first presented frame went unpaced. Beginning at 1 makes the
+    // first signal representable; everything after it follows as before. kPacerDoNotWait is uint64_t(-1),
+    // so no low value collides with the sentinel.
+    uint64_t m_dlfgPacerSemaphoreValue = 1;
     Rc<RtxSemaphore> m_dlfgPacerToPresentSemaphore = nullptr;
   };
 

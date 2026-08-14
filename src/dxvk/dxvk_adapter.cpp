@@ -375,7 +375,7 @@ namespace dxvk {
           DxvkDeviceFeatures  enabledFeatures) {
     DxvkDeviceExtensions devExtensions;
 
-    std::array<DxvkExt*, 43> devExtensionList = {{
+    std::array<DxvkExt*, 44> devExtensionList = {{
       &devExtensions.amdMemoryOverallocationBehaviour,
       &devExtensions.amdShaderFragmentMask,
       &devExtensions.ext4444Formats,
@@ -412,6 +412,7 @@ namespace dxvk {
       &devExtensions.khrPushDescriptor,
       &devExtensions.khrShaderInt8Float16Types,
       &devExtensions.nvRayTracingInvocationReorder,
+      &devExtensions.nvShaderSubgroupPartitioned,
       &devExtensions.khrSynchronization2,
       &devExtensions.extOpacityMicromap,
       &devExtensions.nvLowLatency,
@@ -649,6 +650,16 @@ namespace dxvk {
       enabledFeatures.khrSynchronization2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
       enabledFeatures.khrSynchronization2.pNext = std::exchange(enabledFeatures.core.pNext, &enabledFeatures.khrSynchronization2);
       enabledFeatures.khrSynchronization2.synchronization2 = VK_TRUE;
+    }
+
+    // The micromap feature belongs here alongside synchronization2. synchronization2 was enabled because the
+    // micromap build barriers require it; the micromap feature that the rest of this path requires was never
+    // enabled, so vkCreateMicromapEXT, vkGetMicromapBuildSizesEXT, vkDestroyMicromapEXT and every barrier
+    // using VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT have all been undefined.
+    if (devExtensions.extOpacityMicromap && m_deviceFeatures.extOpacityMicromapFeatures.micromap) {
+      enabledFeatures.extOpacityMicromapFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT;
+      enabledFeatures.extOpacityMicromapFeatures.pNext = std::exchange(enabledFeatures.core.pNext, &enabledFeatures.extOpacityMicromapFeatures);
+      enabledFeatures.extOpacityMicromapFeatures.micromap = VK_TRUE;
     }
     // NV-DXVK end
 
@@ -1233,6 +1244,14 @@ namespace dxvk {
       m_deviceFeatures.extShaderAtomicFloat.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
       m_deviceFeatures.extShaderAtomicFloat.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.extShaderAtomicFloat);
     }
+
+    // NV-DXVK start: opacity micromap -- ask whether the device supports the micromap feature, so that
+    // enabling it below is conditional on real support rather than assumed.
+    if (m_deviceExtensions.supports(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)) {
+      m_deviceFeatures.extOpacityMicromapFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT;
+      m_deviceFeatures.extOpacityMicromapFeatures.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.extOpacityMicromapFeatures);
+    }
+    // NV-DXVK end
 
     m_vki->vkGetPhysicalDeviceFeatures2(m_handle, &m_deviceFeatures.core);
   }

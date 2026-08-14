@@ -614,10 +614,30 @@ vec3 evalMoonDisk(vec3 viewDir, uint moonIdx, AtmosphereArgs args, out float dis
   float limbDarkening = 1.0f - 0.3f * normalizedAngle * normalizedAngle;
   limbDarkening = max(limbDarkening, 0.0f);
 
-  // Disk-local frame — diskX horizontal, diskY vertical (world-up basis)
-  vec3 upVec = abs(moonDir.y) < 0.999f ? vec3(0.0f, 1.0f, 0.0f) : vec3(1.0f, 0.0f, 0.0f);
-  vec3 moonRight = normalize(cross(upVec, moonDir));
-  vec3 moonUp    = cross(moonDir, moonRight);
+  // Disk-local frame. getPhaseIllumination puts the terminator at cos(phase * 2pi) along
+  // +diskX and lights everything to the right of it, and it documents that axis as pointing
+  // at the sun. So the basis has to be built from the sun direction. Built from world-up the
+  // terminator is always vertical and the lit limb always faces the same way on screen no
+  // matter where the sun is, which reads as a moon ignoring the game's phase even when the
+  // phase value arriving here is correct.
+  //
+  // Orienting it at the sun is also what makes waxing and waning differ. cos(phase * 2pi) is
+  // symmetric about full, so a waxing and a waning crescent light the same fraction of the
+  // disk; what separates them is which side of the sky the sun is on.
+  //
+  // The sun projected into the disk plane is that axis. It degenerates when the sun is nearly
+  // parallel to the moon direction -- sun directly behind or in front of the moon -- where the
+  // projection has no stable direction. World-up stands in there, and a vertical terminator is
+  // already right for those two configurations: a full and a new moon have no visible one.
+  vec3 sunInDiskPlane = args.sunDirection - moonDir * dot(args.sunDirection, moonDir);
+  vec3 moonRight;
+  if (dot(sunInDiskPlane, sunInDiskPlane) > 1.0e-6f) {
+    moonRight = normalize(sunInDiskPlane);
+  } else {
+    vec3 upVec = abs(moonDir.y) < 0.999f ? vec3(0.0f, 1.0f, 0.0f) : vec3(1.0f, 0.0f, 0.0f);
+    moonRight = normalize(cross(upVec, moonDir));
+  }
+  vec3 moonUp = cross(moonDir, moonRight);
 
   vec3 toView = normalize(viewDir - moonDir * cosAngle);
   float diskX = dot(toView, moonRight) * normalizedAngle;

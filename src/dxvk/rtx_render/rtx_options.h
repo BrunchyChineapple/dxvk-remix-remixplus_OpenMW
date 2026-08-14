@@ -487,6 +487,42 @@ namespace dxvk {
       RTX_OPTION("rtx.displacement", uint, maxIterations, 64, "The max number of times the POM raymarch will iterate.");
     } displacement;
 
+    // Instrumentation this fork added, each with a switch.
+    //
+    // Added because there was no way to turn any of it off without a rebuild, and no way to find out it
+    // existed without having written it. The manifest option below prints the whole set and its state once at
+    // startup, so a log file from any run names every stream and how to reach it -- which is what makes this
+    // discoverable to someone who was not here when it was built.
+    //
+    // Defaults are opt-in for anything with volume and on for the cheap and valuable. From a measured
+    // 31-minute session: scatter submit was 41% of the log, NEE overflow 29%, mesh lookups 14%, while frame
+    // spikes were 63 lines total and the only warning that a hitch had happened.
+    struct ForkLogging {
+      friend class RtxOptions;
+      friend class ImGUI;
+
+      RTX_OPTION("rtx.fork.log", bool, manifest, true,
+        "Print the instrumentation manifest once at startup: every fork log stream, its state, and the option "
+        "that controls it. Leave this on -- it is one line, and it is how anyone finds the rest of these.");
+      RTX_OPTION("rtx.fork.log", bool, scatterSubmit, false,
+        "Log world-anchored scatter submission counts. Reports on change, but terrain cells change as the "
+        "camera moves, so this is effectively per-frame and was 41% of one measured log.");
+      RTX_OPTION("rtx.fork.log", bool, meshLookups, false,
+        "Log replacement mesh lookup totals periodically. Answers whether a replacement pack is binding.");
+      RTX_OPTION("rtx.fork.log", bool, materialLookups, false,
+        "Log replacement material lookup totals periodically, split by whether the material hash or the albedo "
+        "hash matched.");
+      RTX_OPTION("rtx.fork.log", bool, heavyAssets, false,
+        "Log the heaviest assets by triangle count with their world positions. This is how an asset that "
+        "dominates the primitive budget gets identified.");
+      RTX_OPTION("rtx.fork.log", bool, frameSpikes, true,
+        "Warn when a frame takes far longer than the running median, with the shader compile, throttle and "
+        "acceleration-structure counters for that frame. Low volume and the only notice that a hitch occurred.");
+      RTX_OPTION("rtx.fork.log", bool, neeOverflow, true,
+        "Report when the scene's primitive ID total passes what the NEE cache can address, with the worst "
+        "contributing assets. Self-limiting -- it reports rising peaks only.");
+    } forkLogging;
+
     RTX_OPTION("rtx", bool, resolvePreCombinedMatrices, true, "");
 
     RTX_OPTION("rtx", uint32_t, minPrimsInDynamicBLAS, 1000, "The minimum number of triangles required to promote a mesh to it's own BLAS, otherwise it lands in the merged BLAS with multiple other meshes.");
