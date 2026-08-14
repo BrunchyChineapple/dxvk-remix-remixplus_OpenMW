@@ -341,7 +341,7 @@ struct NEECacheUtils
     {
       trianglePdf /= float(range);
       float triangleExplorationProbability = cb.neeCacheArgs.triangleExplorationProbability;
-      if (uvw.z < triangleExplorationProbability && range < 255)
+      if (uvw.z < triangleExplorationProbability && range < NEE_RANGE_MAX)
       {
         // Sample a triangle outside the given range with a low probability to search potential emissive triangles.
         // The code here is slightly biased because we use the probability for triangles inside the range,
