@@ -132,6 +132,11 @@ struct Material {
   // exporter writes back -- 44 properties were read and never written, and these are the ones the host
   // populates, so they were rendered and then dropped. A captured material previously came back at the
   // default roughness with no emissive, no metallic and no albedo tint.
+  // Set when the constants below describe a mod replacement rather than what the game submitted, in which
+  // case they are not authored at all -- the replacement supplies them again on reimport, and pairing them
+  // with the game's albedo describes a material that exists in neither place. See
+  // RtInstance::CapturedMaterial::fromReplacement.
+  bool        constantsFromReplacement = false;
   float       roughnessConstant = 0.7f;
   float       metallicConstant = 0.f;
   float       albedoConstant[3] { 1.f, 1.f, 1.f };

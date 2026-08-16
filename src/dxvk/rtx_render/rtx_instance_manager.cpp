@@ -1024,7 +1024,9 @@ namespace dxvk {
     return false;
   }
 
-  void InstanceManager::bindMaterial(RtInstance& instance, const RtSurfaceMaterial& material) {
+  void InstanceManager::bindMaterial(RtInstance& instance, const RtSurfaceMaterial& material,
+                                     const bool fromReplacement) {
+    instance.m_capturedMaterial.fromReplacement = fromReplacement;
     if (material.getType() == RtSurfaceMaterialType::Opaque) {
       instance.m_albedoOpacityTextureIndex = material.getOpaqueSurfaceMaterial().getAlbedoOpacityTextureIndex();
       instance.m_samplerIndex = material.getOpaqueSurfaceMaterial().getSamplerIndex();

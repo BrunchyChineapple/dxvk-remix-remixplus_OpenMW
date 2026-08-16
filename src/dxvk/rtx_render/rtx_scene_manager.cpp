@@ -1341,7 +1341,12 @@ namespace dxvk {
 
     if(isFirstUpdateThisFrame) {
       const uint32_t oldMatIdx = instance.surface.surfaceMaterialIndex;
-      m_instanceManager.bindMaterial(instance, surfaceMaterial);
+      // Asked here rather than threaded down from where the replacement is chosen, because this is the only
+      // place that still has both the draw call and the resolved material. Same lookup the submission path
+      // makes at getReplacementMaterial above, so the answer agrees with what was actually applied.
+      const bool fromReplacement
+          = m_pReplacer->getReplacementMaterial(drawCall.getMaterialData().getHash()) != nullptr;
+      m_instanceManager.bindMaterial(instance, surfaceMaterial, fromReplacement);
       if (newMatIdx != oldMatIdx) {
         retainSurfaceMaterial(newMatIdx);
         releaseSurfaceMaterial(oldMatIdx);

@@ -163,6 +163,20 @@ public:
     float displaceIn = 0.f;
     float displaceOut = 0.f;
     bool enableEmission = false;
+
+    // Whether these values came from a replacement rather than from what the game submitted.
+    //
+    // bindMaterial fills this struct from the resolved RtSurfaceMaterial, which is the mod's material
+    // wherever a replacement is active. That is the right thing to render and the wrong thing to bake into a
+    // capture: the capture's albedo is still the game's texture, so authoring a replacement's roughness and
+    // metallic beside it describes a material that exists in neither place -- measured as 28 of 272 materials
+    // exporting metallic_constant = 1.0 against a vanilla albedo. Recorded so the exporter can leave those
+    // constants unauthored and let the mod's own material govern on reimport, which it will, since the
+    // replacement applies there too.
+    //
+    // Placed next to enableEmission deliberately: both are bools at the end of the struct, so this one costs
+    // padding rather than a word, and RtInstance's size assert below stays put.
+    bool fromReplacement = false;
   };
   const CapturedMaterial& getCapturedMaterial() const { return m_capturedMaterial; }
   uint32_t getSamplerIndex() const { return m_samplerIndex; }
@@ -388,7 +402,10 @@ public:
     BlasEntry& blas, const DrawCallState& drawCall, const MaterialData& materialData, RtInstance* existingInstance);
 
   // Binds a raytracing material to the specified instance.
-  void bindMaterial(RtInstance& instance, const RtSurfaceMaterial& material);
+  // fromReplacement says whether the resolved material came from a mod replacement rather than from the
+  // game's own submission. Only CapturedMaterial reads it; nothing about rendering changes. See
+  // CapturedMaterial::fromReplacement.
+  void bindMaterial(RtInstance& instance, const RtSurfaceMaterial& material, const bool fromReplacement = false);
 
   // Copies buffer indices from the BlasEntry's geometry data to the instance's surface.
   void processInstanceBuffers(const BlasEntry& blas, RtInstance& currentInstance) const;

@@ -305,6 +305,7 @@ namespace fork_hooks {
     // The PBR constants, which the instance carries for exactly this purpose. See RtInstance::CapturedMaterial.
     {
       const auto& constants = rtInstance.getCapturedMaterial();
+      lssMat.constantsFromReplacement = constants.fromReplacement;
       lssMat.roughnessConstant = constants.roughnessConstant;
       lssMat.metallicConstant = constants.metallicConstant;
       lssMat.albedoConstant[0] = constants.albedoOpacityConstant.x;

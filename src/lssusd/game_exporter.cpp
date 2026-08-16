@@ -610,11 +610,16 @@ void GameExporter::exportMaterials(const Export& exportData, ExportContext& ctx)
     // The replacement-resolved sourcing is still not ideal and is worth fixing properly one day by recording
     // the pre-replacement constants in CapturedMaterial, which needs a replacement flag plumbed into
     // InstanceManager::bindMaterial. It is a fidelity question, not the correctness bug it was mistaken for.
-    ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::RoughnessConstant].Set(matData.roughnessConstant));
-    ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::MetallicConstant].Set(matData.metallicConstant));
-    ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::AlbedoConstant].Set(
-        pxr::GfVec3f(matData.albedoConstant[0], matData.albedoConstant[1], matData.albedoConstant[2])));
-    ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::OpacityConstant].Set(matData.opacityConstant));
+    // Skipped where the values came from a replacement, because the replacement supplies them again on
+    // reimport and the capture's albedo is the game's texture, not the mod's. Authoring them there paired a
+    // mod's roughness and metallic with a vanilla albedo -- a material that exists in neither place.
+    if (!matData.constantsFromReplacement) {
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::RoughnessConstant].Set(matData.roughnessConstant));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::MetallicConstant].Set(matData.metallicConstant));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::AlbedoConstant].Set(
+          pxr::GfVec3f(matData.albedoConstant[0], matData.albedoConstant[1], matData.albedoConstant[2])));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::OpacityConstant].Set(matData.opacityConstant));
+    }
 
     // Emission, written only when the material actually emits, for the same reason the PBR textures above
     // are conditional: authoring enable_emission = false alongside a zero colour is noise on every opaque
