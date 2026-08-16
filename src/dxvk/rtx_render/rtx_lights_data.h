@@ -87,6 +87,20 @@ namespace dxvk {
       extractTransform(&localToObject);
     }
 
+    // Scales this light's intensity in place, before toRtLight() turns it into radiance.
+    //
+    // Exists to carry a replaced game light's flicker onto the lights that stand in for it. Morrowind
+    // drives flicker and pulse on the host side -- SceneUtil::LightController walks a brightness toward a
+    // random or ping-ponged target and scales the light's colour by it every frame -- so the varying
+    // radiance already arrives here on the original light. A replacement authored in the toolkit specifies
+    // its own intensity and therefore ignored all of that, which is why toolkit-added lights sat static
+    // beside vanilla ones that flickered.
+    //
+    // Applied to intensity rather than to the RtLight's radiance because RtLight has no radiance setter and
+    // takes it through its constructor; intensity is the input toRtLight() derives radiance from, so
+    // scaling here needs no changes to the light types.
+    void scaleIntensity(const float scale) { m_Intensity *= scale; }
+
   private:
     // Supported light data types
     enum LightType {

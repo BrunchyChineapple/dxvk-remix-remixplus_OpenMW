@@ -491,6 +491,32 @@ private:
   std::unordered_set<uint64_t> m_currentFrameTerrainCells;
 
   DrawCallTracker m_drawCallTracker;
+
+  // Per replaced light, the brightest radiance it has been seen at, and when it was last seen.
+  //
+  // This is what lets a toolkit-added light inherit the flicker of the game light it was created from. The
+  // host varies a flickering light's radiance every frame, so the ratio of its current radiance to its own
+  // peak is the flicker curve itself -- no authoring, no new USD attribute, and no reimplementation of
+  // Morrowind's flicker maths, which could only drift from the original.
+  //
+  // Keyed on the light's *instance* identity (asset hash mixed with position), which gives the grouping for
+  // free: four lights placed above one candle all replace the same original and therefore share one phase,
+  // while two candles across a room flicker independently because the game gives each vanilla light its own
+  // phase. Four independently guttering lights over a single candle would read as four separate flames.
+  //
+  // A running peak rather than a first sample, because the first frame a light is seen may catch it
+  // mid-dip. Morrowind re-rolls its flicker target into 0.25..1.0 and walks continuously, so the peak
+  // converges within a second or two, and the ratio is clamped to 1 until it does. Frame-stamped so the map
+  // does not grow without bound across a session's cell changes.
+  struct LightFlickerState {
+    float peakRadiance = 0.0f;
+    uint32_t frameLastSeen = 0;
+  };
+  std::unordered_map<XXH64_hash_t, LightFlickerState> m_lightFlicker;
+  // Only swept once the map is big enough to be worth walking, and only entries older than a few seconds
+  // are dropped -- a light that comes back into view sooner than that keeps its phase rather than snapping.
+  static constexpr size_t kLightFlickerPruneThreshold = 512;
+  static constexpr uint32_t kLightFlickerPruneFrames = 600;
 };
 
 }  // namespace nvvk

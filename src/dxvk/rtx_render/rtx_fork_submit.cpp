@@ -232,6 +232,35 @@ namespace fork_hooks {
       applyCategory(RtxOptions::decalTextures(), InstanceCategories::DecalStatic);
       applyCategory(RtxOptions::terrainTextures(), InstanceCategories::Terrain);
 
+      // Let the vertex colour's alpha reach opacity for particles, which is where a particle's fade lives.
+      //
+      // The same defect as the terrain block below, in the other category the fork's own note said did not
+      // exist: "restricted to terrain because it is the only category whose coverage lives in vertex alpha
+      // rather than in its albedo". A particle is the second. osgParticle interpolates a colour range and an
+      // alpha range across a particle's lifetime and multiplies them, and that product is the whole of how a
+      // puff appears and dissipates -- the texture supplies the shape, the vertex alpha supplies the age.
+      //
+      // An API-submitted material leaves the alpha arguments at LegacyMaterialData's defaults, SelectArg1
+      // with arg1 = Texture, which selects the albedo's alpha and discards the vertex colour. So the fade was
+      // computed by the host, packed into color0, bound, read into surfaceInteraction.vertexColor.a, and then
+      // never consulted: every particle stayed at the opacity of its texture for its whole life and vanished
+      // at full strength instead of dissolving. On Dynamic Ambient Visual Effects candle smoke, whose NIF also
+      // carries a 0.5 material emissive, that is a chain of hard-edged blobs rising at uniform brightness
+      // rather than a wisp -- and because emissiveRadiance is scaled by this same alphaOpacity, the emission
+      // did not taper either.
+      //
+      // Modulate rather than SelectArg2 so a texture that does carry alpha still contributes its shape; the
+      // product of the two is what the rasteriser blends and what osgParticle's own renderer draws.
+      //
+      // API draws only, by virtue of living in this function. A legacy D3D9 particle derives these fields
+      // from real fixed-function stage state, and overwriting that would be a regression rather than a fix.
+      if (drawCall.testCategoryFlags(InstanceCategories::Particle)) {
+        LegacyMaterialData& particleMaterial = drawCall.modifyMaterialData();
+        particleMaterial.textureAlphaOperation = DxvkRtTextureOperation::Modulate;
+        particleMaterial.textureAlphaArg1Source = RtTextureArgSource::Texture;
+        particleMaterial.textureAlphaArg2Source = RtTextureArgSource::VertexColor0;
+      }
+
       // Terrain-as-Decals, mirrored from the D3D9 layer.
       //
       // d3d9_rtx.cpp does this swap for legacy draws and nothing did it for API draws, which is why

@@ -82,6 +82,8 @@ namespace dxvk {
 
     const RtxMipmap::Resource& getTerrainTexture(ReplacementMaterialTextureType::Enum textureType) const;
     const MaterialData* getMaterialData() const;
+
+
     const Rc<DxvkSampler>& getTerrainSampler() const;
 
     // True if any cascade image was created or resized during the current frame.

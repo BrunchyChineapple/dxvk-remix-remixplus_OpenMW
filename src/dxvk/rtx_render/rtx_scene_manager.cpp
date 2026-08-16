@@ -2084,6 +2084,45 @@ namespace dxvk {
         : 0.0f;
     const Vector3 originalRadiance = original.getRadiance();
 
+    // The original's flicker, recovered as a ratio so the replacements can inherit it. See m_lightFlicker.
+    //
+    // Morrowind drives flicker and pulse host-side, so a flickering light's radiance already varies every
+    // frame by the time it reaches here. Dividing the current radiance by the brightest this same light has
+    // been seen at recovers the curve without knowing anything about how it was produced -- flicker against
+    // pulse, fast against slow, and each light's own random phase all come through for free, and cannot
+    // drift from what the rest of the scene is doing the way a reimplementation would.
+    //
+    // Magnitude rather than per channel: LightController scales the colour uniformly, so one scalar carries
+    // it and a per-channel ratio would only add noise where a channel is near zero.
+    const uint32_t currentFrame = m_device->getCurrentFrameId();
+    const float currentMagnitude = std::max(originalRadiance.x,
+        std::max(originalRadiance.y, originalRadiance.z));
+
+    LightFlickerState& flicker = m_lightFlicker[lightIdHash];
+    flicker.peakRadiance = std::max(flicker.peakRadiance, currentMagnitude);
+    flicker.frameLastSeen = currentFrame;
+
+    // Clamped to 1 so the ratio can never brighten a replacement above what it was authored at while the
+    // peak is still converging, and guarded against a light that is genuinely off -- a zero peak would
+    // otherwise divide by zero and a zeroed original is exactly the workflow here, where the vanilla light
+    // is set to zero intensity in the toolkit and replaced. Note that zeroing happens in the mod, so the
+    // radiance measured above is still the game's own and still flickers.
+    const float flickerRatio = flicker.peakRadiance > 0.0f
+        ? std::min(1.0f, currentMagnitude / flicker.peakRadiance)
+        : 1.0f;
+    const Vector3 flickerPeakRadiance = (flickerRatio > 0.0f)
+        ? originalRadiance / flickerRatio
+        : originalRadiance;
+
+    // Dropped once the light has been out of sight long enough that its phase no longer matters, which
+    // bounds the map across a session rather than letting every light of every visited cell accumulate.
+    if (m_lightFlicker.size() > kLightFlickerPruneThreshold) {
+      for (auto it = m_lightFlicker.begin(); it != m_lightFlicker.end();) {
+        it = (currentFrame - it->second.frameLastSeen > kLightFlickerPruneFrames)
+            ? m_lightFlicker.erase(it) : std::next(it);
+      }
+    }
+
     const ReplacementInstance::LookupKey lightKey {
       lightIdHash, lightAssetHash, kEmptyHash, kEmptyHash, lightPos, lightTransform
     };
@@ -2114,7 +2153,15 @@ namespace dxvk {
 
       // Before the AABB is read, as on the D3D9 path: an entry such as the translated original carries
       // Unknown type and a zero position until the submitted light has been merged into it.
-      replacementLight.merge(lightPos, originalRadius, originalRadiance);
+      //
+      // Merged with the flicker taken back OUT of the radiance, then re-applied to everything below. An
+      // entry that specifies no intensity of its own inherits what is passed here, so passing the live
+      // radiance and then scaling as well would flicker those twice -- squared, and visibly wrong. Passing
+      // the peak keeps the inherited case exactly as it was and lets the single scale below cover both.
+      replacementLight.merge(lightPos, originalRadius, flickerPeakRadiance);
+
+      // The flicker itself, which is the whole of what makes a toolkit-added light stop being static.
+      replacementLight.scaleIntensity(flickerRatio);
 
       RtLight rtReplacementLight = replacementLight.toRtLight();
 
