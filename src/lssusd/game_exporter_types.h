@@ -115,6 +115,45 @@ struct Material {
   std::string matName;
   std::string albedoTexPath;
   bool        enableOpacity = false;
+  // The alpha state, which is what actually tells the runtime a captured surface is not opaque.
+  //
+  // enableOpacity above is an MDL-side concept and does not reach RtSurface::AlphaState at all. The runtime
+  // reads these six from the USD material instead -- see the property table in rtx_material_data.h, whose
+  // second column is the USD name -- and InstanceManager::calculateAlphaState consumes them.
+  //
+  // useLegacyAlphaState is the one that matters most and it defaults to TRUE in that table. True means
+  // "derive blending from the D3D9 draw call", and a capture being replayed has no D3D9 draw call, so a
+  // material that says nothing resolves to fully opaque. That is why every captured particle opened as a
+  // card: not a missing texture, not a missing opacity flag, but a material that never claimed to be
+  // blended in the vocabulary the runtime reads. NVIDIA's own Morrowind pack sets exactly these by hand
+  // (`custom bool inputs:blend_enabled`, `custom bool inputs:use_legacy_alpha_state`, ...), which is the
+  // clearest evidence that this is the intended interface and that the exporter simply never wrote it.
+  // The PBR constants. Found by listing what the runtime reads out of a USD material against what this
+  // exporter writes back -- 44 properties were read and never written, and these are the ones the host
+  // populates, so they were rendered and then dropped. A captured material previously came back at the
+  // default roughness with no emissive, no metallic and no albedo tint.
+  float       roughnessConstant = 0.7f;
+  float       metallicConstant = 0.f;
+  float       albedoConstant[3] { 1.f, 1.f, 1.f };
+  float       opacityConstant = 1.f;
+  bool        enableEmission = false;
+  float       emissiveColorConstant[3] { 0.f, 0.f, 0.f };
+  float       emissiveIntensity = 0.f;
+  std::string emissiveTexPath;
+  // Parallax, and the sprite sheet that animates a texture atlas. The sheet comes off RtSurface rather than
+  // the surface material, since that is where the runtime keeps it.
+  std::string heightTexPath;
+  float       displaceIn = 0.f;
+  float       displaceOut = 0.f;
+  int         spriteSheetRows = 1;
+  int         spriteSheetCols = 1;
+  int         spriteSheetFps = 0;
+  bool        useLegacyAlphaState = false;
+  bool        blendEnabled = false;
+  int         blendType = 0;          // BlendType::kAlpha
+  bool        invertedBlend = false;
+  int         alphaTestType = 7;      // AlphaTestType::kAlways, i.e. no test
+  int         alphaTestReferenceValue = 0;
   // Defaulted because the exporter writes these unconditionally into every material's WrapModeU/V and
   // FilterMode attributes. A capture path that cannot supply a sampler -- which is any material submitted
   // through the API, where LegacyMaterialData carries none -- previously left them uninitialised, so

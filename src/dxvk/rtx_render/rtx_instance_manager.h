@@ -144,6 +144,27 @@ public:
   uint32_t getNormalTextureIndex() const { return m_normalTextureIndex; }
   uint32_t getRoughnessTextureIndex() const { return m_roughnessTextureIndex; }
   uint32_t getMetallicTextureIndex() const { return m_metallicTextureIndex; }
+
+  // The material's PBR *constants*, recorded for the capturer for the same reason the texture indices above
+  // are, and found the same way -- by listing what the runtime reads out of a USD material against what the
+  // exporter writes back (scatter/usd_vocab_audit.py). Forty-four properties were read and never written;
+  // these are the ones this host demonstrably populates, so they were being rendered and then dropped on
+  // export. reflection_roughness_constant alone is set 2524 times in the replacement pack, which is a fair
+  // measure of how much a capture was leaving on the floor: every captured material came back at the
+  // default roughness with no emissive at all.
+  struct CapturedMaterial {
+    Vector4 albedoOpacityConstant { 1.f, 1.f, 1.f, 1.f };
+    Vector3 emissiveColorConstant { 0.f, 0.f, 0.f };
+    float emissiveIntensity = 0.f;
+    float roughnessConstant = 0.7f;
+    float metallicConstant = 0.f;
+    uint32_t emissiveTextureIndex = kSurfaceMaterialInvalidTextureIndex;
+    uint32_t heightTextureIndex = kSurfaceMaterialInvalidTextureIndex;
+    float displaceIn = 0.f;
+    float displaceOut = 0.f;
+    bool enableEmission = false;
+  };
+  const CapturedMaterial& getCapturedMaterial() const { return m_capturedMaterial; }
   uint32_t getSamplerIndex() const { return m_samplerIndex; }
   uint32_t getSecondaryOpacityTextureIndex() const { return m_secondaryOpacityTextureIndex; }
   uint32_t getSecondarySamplerIndex() const { return m_secondarySamplerIndex; }
@@ -226,6 +247,7 @@ private:
   MaterialDataType m_materialType = MaterialDataType::Invalid;
   uint32_t m_albedoOpacityTextureIndex = kSurfaceMaterialInvalidTextureIndex;
   uint32_t m_normalTextureIndex = kSurfaceMaterialInvalidTextureIndex;
+  CapturedMaterial m_capturedMaterial;
   uint32_t m_roughnessTextureIndex = kSurfaceMaterialInvalidTextureIndex;
   uint32_t m_metallicTextureIndex = kSurfaceMaterialInvalidTextureIndex;
   uint32_t m_samplerIndex = kSurfaceMaterialInvalidTextureIndex;

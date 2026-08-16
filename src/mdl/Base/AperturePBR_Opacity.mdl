@@ -46,6 +46,12 @@ export material AperturePBR_Opacity(
     anno::description("The base albedo color.  (Used if no texture is specified)"),
     anno::in_group("Base Material")
   ]],
+  uniform bool enable_opacity = false
+  [[
+    anno::display_name("Enable Opacity"),
+    anno::description("Honour the opacity value -- the albedo texture's alpha channel, or Opacity Amount when there is no texture. Off treats the surface as fully opaque even though the opacity is still computed."),
+    anno::in_group("Base Material")
+  ]],
   uniform float opacity_constant = 1.f
   [[
     anno::hard_range(0.0, 1.0),
@@ -483,7 +489,16 @@ export material AperturePBR_Opacity(
   emissive_color: emissive_lookup,
   emissive_intensity: emissive_intensity,
   // Note: Force opacity to be enabled when the material is ignored so the constant opacity it is given to be somewhat seethrough works.
-  enable_opacity: ignore_material ? true : false,
+  // Forwards the parameter rather than a hardcoded false. `opacity` below has always been computed -- it is
+  // the albedo's alpha whenever a diffuse texture is bound -- and then discarded, so a material named
+  // AperturePBR_Opacity rendered every surface fully opaque. That is why a captured particle opens in the
+  // toolkit as a card: the whole texture rectangle, transparent region included.
+  //
+  // NOTE this copy is the tracked one; the copy the capture exporter actually embeds is
+  // external/omni_core_materials/Base/AperturePBR_Opacity.mdl, which is gitignored (/external). Both carry
+  // this change, and a refetch of external/ will silently revert the one that matters -- see
+  // patches/RTXremixOpenMW/keep/2026-08-15_1816_mdl_enable_opacity/.
+  enable_opacity: ignore_material ? true : enable_opacity,
   opacity: opacity,
   enable_thin_film: enable_thin_film,
   thin_film_thickness: thin_film_thickness,

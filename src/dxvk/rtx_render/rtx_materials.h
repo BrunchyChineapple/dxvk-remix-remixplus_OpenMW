@@ -794,6 +794,17 @@ struct RtOpaqueSurfaceMaterial {
     return m_albedoOpacityConstant;
   }
 
+  // The authored displacement, before getDisplacementInFactor()/OutFactor() scale it. Added for the game
+  // capturer, which has to record what the material asked for rather than what this frame's global factors
+  // made of it -- a capture reopened with different factors would otherwise bake today's settings in.
+  float getDisplaceIn() const {
+    return m_displaceIn;
+  }
+
+  float getDisplaceOut() const {
+    return m_displaceOut;
+  }
+
   float getRoughnessConstant() const {
     return m_roughnessConstant;
   }

@@ -1,4 +1,4 @@
-/*
+﻿/*
 * Copyright (c) 2023-2026, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
@@ -29,6 +29,7 @@
 #include "rtx_utils.h"
 #include "rtx_instance_manager.h"
 #include "rtx_scene_manager.h"
+
 #include "rtx_materials.h"
 #include "rtx_texture_manager.h"
 #include "rtx_fork_hooks.h"
@@ -92,6 +93,45 @@ namespace dxvk {
       meta.dstAlphaBlendFactor = (uint32_t) rtInstance.surface.blendModeState.alphaDstFactor;
       meta.alphaBlendOp = (uint32_t) rtInstance.surface.blendModeState.alphaBlendOp;
       meta.writeMask = (uint32_t) rtInstance.surface.blendModeState.writeMask;
+
+      // Recover the factors for a host that has no D3D9 blend state to copy.
+      //
+      // surface.blendModeState is assigned in exactly one place -- rtx_instance_manager.cpp, from the draw
+      // call's LegacyMaterialData -- and an API-submitted draw leaves that default constructed. So every
+      // blended surface this host captures recorded src=0/dst=0, which is VK_BLEND_FACTOR_ZERO twice and
+      // describes a surface that contributes nothing. alphaState.blendType is what the runtime actually
+      // resolved, so invert it back into the factor pair that would have produced it.
+      //
+      // Only the two mappings this host emits are inverted, taken from the forward direction in
+      // InstanceManager::calculateAlphaState so the two cannot disagree. Anything else is left as captured
+      // rather than guessed at -- a wrong factor pair is worse than an obviously empty one, because it
+      // looks like data.
+      //
+      // Note this changes no rendering. It corrects the recorded metadata only, and that block is currently
+      // read by nothing in the runtime or the toolkit -- so the value here is that a capture stops lying to
+      // whatever eventually does read it.
+      const bool blendStateMissing = rtInstance.surface.blendModeState.colorSrcFactor == VK_BLEND_FACTOR_ZERO
+          && rtInstance.surface.blendModeState.colorDstFactor == VK_BLEND_FACTOR_ZERO;
+      if (blendStateMissing && meta.alphaBlendEnabled) {
+        switch (rtInstance.surface.alphaState.blendType) {
+        case BlendType::kAlpha:
+          meta.srcColorBlendFactor = (uint32_t) VK_BLEND_FACTOR_SRC_ALPHA;
+          meta.dstColorBlendFactor = (uint32_t) (rtInstance.surface.alphaState.invertedBlend
+              ? VK_BLEND_FACTOR_SRC_ALPHA : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+          if (rtInstance.surface.alphaState.invertedBlend) {
+            meta.srcColorBlendFactor = (uint32_t) VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+          }
+          meta.colorBlendOp = (uint32_t) VK_BLEND_OP_ADD;
+          break;
+        case BlendType::kAlphaEmissive:
+          meta.srcColorBlendFactor = (uint32_t) VK_BLEND_FACTOR_SRC_ALPHA;
+          meta.dstColorBlendFactor = (uint32_t) VK_BLEND_FACTOR_ONE;
+          meta.colorBlendOp = (uint32_t) VK_BLEND_OP_ADD;
+          break;
+        default:
+          break;
+        }
+      }
       meta.textureColorArg1Source = (uint32_t) rtInstance.surface.textureColorArg1Source;
       meta.textureColorArg2Source = (uint32_t) rtInstance.surface.textureColorArg2Source;
       meta.textureColorOperation = (uint32_t) rtInstance.surface.textureColorOperation;
@@ -146,6 +186,7 @@ namespace dxvk {
     if (m_state.has<State::BeginExport>()) {
       exportUsd(ctx);
     }
+
   }
 
   void GameCapturer::setInstanceUpdateFlag(const RtInstance& rtInstance, const InstFlag flag) {
@@ -434,6 +475,17 @@ namespace dxvk {
     distantLight.finalTime = m_pCap->currentFrameNum;
   }
 
+  // Removed 2026-08-15: a baked-terrain UV bake that replaced a mesh's texcoords with coordinates into the
+  // terrain baker's cascade, so a capture could hold blended ground as an ordinary textured mesh.
+  //
+  // Withdrawn for two reasons. It is inert while rtx.terrainBaker.enableBaking is off, which it is in this
+  // project, because there is no cascade to sample. And it keyed on BlasEntry::input's texgenMode, which is
+  // not a per-instance value in the way that required, so it could overwrite texcoords on meshes it had no
+  // business touching.
+  //
+  // It was also blamed at the time for a mesh regression it did not cause. That was
+  // use_legacy_alpha_state being authored on every material plus the filter/wrap promotion to inputs:, both
+  // in game_exporter.cpp. Recorded because the wrong attribution cost hours.
   void GameCapturer::captureInstances(const Rc<DxvkContext> ctx) {
     for (const RtInstance* pRtInstance : m_sceneManager.getInstanceTable()) {
       assert(pRtInstance->getBlas() != nullptr);

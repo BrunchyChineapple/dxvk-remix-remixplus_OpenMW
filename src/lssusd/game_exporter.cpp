@@ -339,6 +339,26 @@ enum Enum {
   FilterMode,
   WrapModeU,
   WrapModeV,
+  UseLegacyAlphaState,
+  BlendEnabled,
+  BlendType,
+  InvertedBlend,
+  AlphaTestType,
+  AlphaTestReferenceValue,
+  RoughnessConstant,
+  MetallicConstant,
+  AlbedoConstant,
+  OpacityConstant,
+  EnableEmission,
+  EmissiveColorConstant,
+  EmissiveIntensity,
+  EmissiveTex,
+  HeightTex,
+  DisplaceIn,
+  DisplaceOut,
+  SpriteSheetRows,
+  SpriteSheetCols,
+  SpriteSheetFps,
 };
 static std::unordered_map<Enum,std::string> attrNames {
   {OutputsOut,       "outputs:out"},
@@ -353,10 +373,60 @@ static std::unordered_map<Enum,std::string> attrNames {
   {ImplSrc,          "info:implementationSource"},
   {MdlSrcAsset,      "info:mdl:sourceAsset"},
   {MdlSrcAssetSubId, "info:mdl:sourceAsset:subIdentifier"},
-  {Opacity,          "enable_opacity"},
+  // These four need the same "inputs:" prefix as the textures above, and upstream omits it (f33c25859,
+  // 2023-12-05). All four are real AperturePBR_Opacity parameters -- enable_opacity, filter_mode,
+  // wrap_mode_u and wrap_mode_v are declared in the .mdl -- but an MDL shader reads its parameters from
+  // inputs:, so a bare attribute of the same name on the Shader prim is authored, saved, and then read by
+  // nothing. Not the renderer, not the toolkit's material panel.
+  //
+  // Measured on a capture of this project: 534 materials, `enable_opacity` present as a bare attribute on
+  // 534 of them and as an input on none. Every captured material therefore opened fully opaque, which is
+  // why particles came into the toolkit as cards -- the whole texture rectangle including the transparent
+  // part, with a flame or a smoke plate as a rectangle of albedo. The exported texture was never at fault:
+  // the smoke's albedo comes out byte-identical to the source, DXT5 with its alpha intact, and the capturer
+  // sets lssMat.enableOpacity from !alphaState.isFullyOpaque correctly.
+  //
+  // The sampler pair was silently inert in the same way, which the comment beside their Set() calls says is
+  // the difference between a tiled texture and one flat edge texel.
+  {Opacity,          "inputs:enable_opacity"},
+  // Back to the bare names stock used, deliberately, for now.
+  //
+  // Moving these under inputs: is correct in principle -- an MDL shader reads its parameters from inputs:,
+  // so a bare attribute of the same name is authored and then read by nothing. But correct in principle is
+  // what turned three inert attributes into live ones on all 272 materials in a session that also broke
+  // meshes, and the sampler they are derived from comes off the resolved material, which is the mod's
+  // wherever a replacement is active. Restoring the stock names removes them from the set of things that
+  // changed. Re-promote them once the mesh regression is actually understood, one at a time.
   {FilterMode,       "filter_mode"},
   {WrapModeU,        "wrap_mode_u"},
   {WrapModeV,        "wrap_mode_v"},
+  // The alpha state. These names come from the second column of the material property table in
+  // rtx_material_data.h, which is the runtime's own USD vocabulary, and they are the same six NVIDIA's
+  // Morrowind pack authors by hand. Without them a capture never claims to be blended and every particle
+  // opens in the toolkit as an opaque card -- see lss::Material for the whole mechanism.
+  {UseLegacyAlphaState,     "inputs:use_legacy_alpha_state"},
+  {BlendEnabled,            "inputs:blend_enabled"},
+  {BlendType,               "inputs:blend_type"},
+  {InvertedBlend,           "inputs:inverted_blend"},
+  {AlphaTestType,           "inputs:alpha_test_type"},
+  {AlphaTestReferenceValue, "inputs:alpha_test_reference_value"},
+  // The PBR constants, again straight from the second column of the runtime's property table. The pack
+  // authors reflection_roughness_constant 2524 times, metallic_constant 33 and the emissive trio 19 each,
+  // which is the measure of what a capture was dropping.
+  {RoughnessConstant,       "inputs:reflection_roughness_constant"},
+  {MetallicConstant,        "inputs:metallic_constant"},
+  {AlbedoConstant,          "inputs:diffuse_color_constant"},
+  {OpacityConstant,         "inputs:opacity_constant"},
+  {EnableEmission,          "inputs:enable_emission"},
+  {EmissiveColorConstant,   "inputs:emissive_color_constant"},
+  {EmissiveIntensity,       "inputs:emissive_intensity"},
+  {EmissiveTex,             "inputs:emissive_mask_texture"},
+  {HeightTex,               "inputs:height_texture"},
+  {DisplaceIn,              "inputs:displace_in"},
+  {DisplaceOut,             "inputs:displace_out"},
+  {SpriteSheetRows,         "inputs:sprite_sheet_rows"},
+  {SpriteSheetCols,         "inputs:sprite_sheet_cols"},
+  {SpriteSheetFps,          "inputs:sprite_sheet_fps"},
 };
 static std::unordered_map<Enum,AttrDesc> attrDescs{
   AttrDescMapEntry(OutputsOut,       Token, false, Varying),
@@ -371,6 +441,30 @@ static std::unordered_map<Enum,AttrDesc> attrDescs{
   AttrDescMapEntry(FilterMode,        UInt, false, Uniform),
   AttrDescMapEntry(WrapModeU,         UInt, false, Uniform),
   AttrDescMapEntry(WrapModeV,         UInt, false, Uniform),
+  // custom = true and Bool/Int to match how the pack spells them, since that is the form the runtime's
+  // USD reader and the toolkit's material panel are both known to accept.
+  AttrDescMapEntry(UseLegacyAlphaState,     Bool, true, Uniform),
+  AttrDescMapEntry(BlendEnabled,            Bool, true, Uniform),
+  AttrDescMapEntry(BlendType,                Int, true, Uniform),
+  AttrDescMapEntry(InvertedBlend,           Bool, true, Uniform),
+  AttrDescMapEntry(AlphaTestType,            Int, true, Uniform),
+  AttrDescMapEntry(AlphaTestReferenceValue,  Int, true, Uniform),
+  // Colours are Color3f rather than Float3, matching how the pack and the MDL declare them; a plain float3
+  // would author a vector where a colour is expected and lose the colour-space handling with it.
+  AttrDescMapEntry(RoughnessConstant,      Float, false, Uniform),
+  AttrDescMapEntry(MetallicConstant,       Float, false, Uniform),
+  AttrDescMapEntry(AlbedoConstant,       Color3f, false, Uniform),
+  AttrDescMapEntry(OpacityConstant,        Float, false, Uniform),
+  AttrDescMapEntry(EnableEmission,          Bool,  true, Uniform),
+  AttrDescMapEntry(EmissiveColorConstant, Color3f, true, Uniform),
+  AttrDescMapEntry(EmissiveIntensity,      Float,  true, Uniform),
+  AttrDescMapEntry(EmissiveTex,            Asset, false, Varying),
+  AttrDescMapEntry(HeightTex,              Asset, false, Varying),
+  AttrDescMapEntry(DisplaceIn,             Float,  true, Uniform),
+  AttrDescMapEntry(DisplaceOut,            Float,  true, Uniform),
+  AttrDescMapEntry(SpriteSheetRows,          Int,  true, Uniform),
+  AttrDescMapEntry(SpriteSheetCols,          Int,  true, Uniform),
+  AttrDescMapEntry(SpriteSheetFps,           Int,  true, Uniform),
 };
 }
 }
@@ -466,6 +560,98 @@ void GameExporter::exportMaterials(const Export& exportData, ExportContext& ctx)
 
     // Mark whether to enable varying opacity
     ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::Opacity].Set(matData.enableOpacity));
+
+    // The alpha state, in the runtime's own vocabulary. See lss::Material for why enable_opacity above is
+    // not sufficient on its own: it is MDL-side and never reaches RtSurface::AlphaState, whereas these are
+    // what InstanceManager::calculateAlphaState reads.
+    // Authored only when false, which is only for surfaces that blend.
+    //
+    // true is already the runtime's default for this option, so writing it changes nothing in principle --
+    // but it is the one attribute this session authors on every material that stock authored on none, and
+    // after eliminating everything else it is the last candidate standing. An authored attribute is not
+    // always inert even when it matches the default: it can mark a material as having specified its alpha
+    // state, which is a different thing from staying silent.
+    if (!matData.useLegacyAlphaState) {
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::UseLegacyAlphaState].Set(matData.useLegacyAlphaState));
+    }
+
+    // The explicit values are authored only when they are authoritative, which is when
+    // use_legacy_alpha_state is false.
+    //
+    // Writing them regardless was an assumption -- that the runtime ignores them while the legacy flag is
+    // set -- and it is the last untested item in this session's delta. If it is wrong, then every one of the
+    // 250 materials that exported blend_enabled=false with alpha_test_type=7 (ALWAYS) had its cutout
+    // overridden into a solid quad, which is what the meshes look like. Authoring nothing leaves the runtime
+    // to resolve alpha the way it did before this session, and leaves the six values for the blended
+    // surfaces that actually need them, which is the particle case this whole group was added for.
+    if (!matData.useLegacyAlphaState) {
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::BlendEnabled].Set(matData.blendEnabled));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::BlendType].Set(matData.blendType));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::InvertedBlend].Set(matData.invertedBlend));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::AlphaTestType].Set(matData.alphaTestType));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::AlphaTestReferenceValue].Set(matData.alphaTestReferenceValue));
+    }
+
+    // The scalar PBR constants, and they matter more than they look.
+    //
+    // Morrowind ships almost no PBR maps, so for most surfaces these four numbers *are* the material's
+    // appearance: the host classifies a texture by path in kSurfaceRules and hands the runtime a roughness
+    // and metallic for it. That is what makes a glass bottle glossy and a cloth sack matte on screen. Leave
+    // them unauthored and a capture reopens with MDL defaults instead, which is a capture that does not look
+    // like the runtime it came from -- the specific complaint that sent me looking here.
+    //
+    // Removed for a while on 2026-08-15 on the theory that they were breaking meshes, because they are read
+    // from RtInstance::CapturedMaterial, which bindMaterial fills from the *resolved* surface material -- the
+    // mod's values wherever a replacement is active. Measured 28 of 272 materials exporting
+    // metallic_constant = 1.0 and assumed that was the fault. It was not: the mesh damage was
+    // use_legacy_alpha_state being authored on every material together with the filter/wrap promotion to
+    // inputs:, both fixed above. Restored, because removing them cost the capture its whole look for nothing.
+    //
+    // The replacement-resolved sourcing is still not ideal and is worth fixing properly one day by recording
+    // the pre-replacement constants in CapturedMaterial, which needs a replacement flag plumbed into
+    // InstanceManager::bindMaterial. It is a fidelity question, not the correctness bug it was mistaken for.
+    ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::RoughnessConstant].Set(matData.roughnessConstant));
+    ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::MetallicConstant].Set(matData.metallicConstant));
+    ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::AlbedoConstant].Set(
+        pxr::GfVec3f(matData.albedoConstant[0], matData.albedoConstant[1], matData.albedoConstant[2])));
+    ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::OpacityConstant].Set(matData.opacityConstant));
+
+    // Emission, written only when the material actually emits, for the same reason the PBR textures above
+    // are conditional: authoring enable_emission = false alongside a zero colour is noise on every opaque
+    // material in the capture, and an emissive intensity that cannot take effect reads as a mistake by
+    // whoever opens it.
+    if (matData.enableEmission) {
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::EnableEmission].Set(matData.enableEmission));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::EmissiveColorConstant].Set(pxr::GfVec3f(
+          matData.emissiveColorConstant[0], matData.emissiveColorConstant[1],
+          matData.emissiveColorConstant[2])));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::EmissiveIntensity].Set(matData.emissiveIntensity));
+    }
+    // Not through setDataTexture: that one asks for "raw" because a normal or roughness map is data, and an
+    // emissive mask is a colour. Read through an sRGB curve or not read through one changes what it emits.
+    if (!matData.emissiveTexPath.empty()) {
+      const auto relEmissivePath =
+        std::filesystem::relative(computeLocalPath(matData.emissiveTexPath), fullMaterialBasePath).string();
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::EmissiveTex].Set(pxr::SdfAssetPath(relEmissivePath)));
+      shaderAttrs[ShaderAttr::EmissiveTex].SetColorSpace(pxr::TfToken("auto"));
+    }
+
+    // Parallax. The height map is data, so it goes through setDataTexture and its "raw" colour space; the
+    // two depths are written only alongside it, because displacement with no height texture is inert and
+    // would describe a surface that cannot displace.
+    setDataTexture(ShaderAttr::HeightTex, matData.heightTexPath);
+    if (!matData.heightTexPath.empty()) {
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::DisplaceIn].Set(matData.displaceIn));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::DisplaceOut].Set(matData.displaceOut));
+    }
+
+    // The sprite sheet, written only when the material is actually a sheet. Rows and columns default to 1
+    // and fps to 0 on every ordinary texture, and authoring those on all of them would be noise.
+    if (matData.spriteSheetRows > 1 || matData.spriteSheetCols > 1 || matData.spriteSheetFps > 0) {
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::SpriteSheetRows].Set(matData.spriteSheetRows));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::SpriteSheetCols].Set(matData.spriteSheetCols));
+      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::SpriteSheetFps].Set(matData.spriteSheetFps));
+    }
 
     // Sampler State
     ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::FilterMode].Set((uint32_t)lss::Mdl::Filter::vkToMdl(matData.sampler.filter)));

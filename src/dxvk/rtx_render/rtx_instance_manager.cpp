@@ -160,7 +160,14 @@ namespace dxvk {
       // the game capturer can find a material's PBR images. Sixteen bytes rather than the twelve the three
       // uint32_ts occupy, because of alignment padding -- which is exactly why this number is read off the
       // compiler's own diagnostic rather than reasoned about.
-      static_assert(RtInstanceSize == 792, "RtInstance size has changed.  Fix the copy constructor above this message, then update the expected size.");
+      //
+      // 792 -> 840 on adding m_capturedMaterial, the PBR *constants* the capturer needs for the same reason
+      // it needs those indices. Grouped into one struct rather than eight loose members so the copy above
+      // gains one line instead of eight, which is the line most likely to be forgotten.
+      //
+      // 840 -> 848 on adding the height texture index and the two displacement depths to that struct, so
+      // parallax round-trips through a capture as well.
+      static_assert(RtInstanceSize == 848, "RtInstance size has changed.  Fix the copy constructor above this message, then update the expected size.");
     };
     CheckRtInstanceSize<sizeof(RtInstance)> _rtInstanceSizeTest;
   }
@@ -179,6 +186,7 @@ namespace dxvk {
     m_normalTextureIndex = src.m_normalTextureIndex;
     m_roughnessTextureIndex = src.m_roughnessTextureIndex;
     m_metallicTextureIndex = src.m_metallicTextureIndex;
+    m_capturedMaterial = src.m_capturedMaterial;
     m_samplerIndex = src.m_samplerIndex;
     m_secondaryOpacityTextureIndex = src.m_secondaryOpacityTextureIndex;
     m_secondarySamplerIndex = src.m_secondarySamplerIndex;
@@ -1025,6 +1033,27 @@ namespace dxvk {
       instance.m_normalTextureIndex = material.getOpaqueSurfaceMaterial().getNormalTextureIndex();
       instance.m_roughnessTextureIndex = material.getOpaqueSurfaceMaterial().getRoughnessTextureIndex();
       instance.m_metallicTextureIndex = material.getOpaqueSurfaceMaterial().getMetallicTextureIndex();
+
+      // The constants, alongside the texture indices and for the same reason. See CapturedMaterial.
+      const auto& opaque = material.getOpaqueSurfaceMaterial();
+      instance.m_capturedMaterial.albedoOpacityConstant = opaque.getAlbedoOpacityConstant();
+      instance.m_capturedMaterial.emissiveColorConstant = opaque.getEmissiveColorConstant();
+      instance.m_capturedMaterial.emissiveIntensity = opaque.getEmissiveIntensity();
+      instance.m_capturedMaterial.roughnessConstant = opaque.getRoughnessConstant();
+      instance.m_capturedMaterial.metallicConstant = opaque.getMetallicConstant();
+      instance.m_capturedMaterial.emissiveTextureIndex = opaque.getEmissiveColorTextureIndex();
+      // Parallax. The height map and its two depths travel together: displacement with no height texture is
+      // inert (see the hasDisplacement test on this material), so exporting one without the other would
+      // describe a surface that cannot displace.
+      instance.m_capturedMaterial.heightTextureIndex = opaque.getHeightTextureIndex();
+      instance.m_capturedMaterial.displaceIn = opaque.getDisplaceIn();
+      instance.m_capturedMaterial.displaceOut = opaque.getDisplaceOut();
+      // Read, not derived. An earlier version of this inferred emission from `getEmissiveIntensity() > 0`,
+      // which is wrong in a way that is invisible until it reaches a screen: emissive_intensity DEFAULTS TO
+      // 40 in the property table, because emission is gated by enable_emission and the intensity is simply
+      // carried alongside it. So the inference made every captured material emit at 40 -- terrain came back
+      // white and grass came back glowing yellow-green in the toolkit.
+      instance.m_capturedMaterial.enableEmission = opaque.getEnableEmission();
     } else if (material.getType() == RtSurfaceMaterialType::RayPortal) {
       instance.m_albedoOpacityTextureIndex = material.getRayPortalSurfaceMaterial().getMaskTextureIndex();
       instance.m_samplerIndex = material.getRayPortalSurfaceMaterial().getSamplerIndex();
@@ -1345,8 +1374,12 @@ namespace dxvk {
     // same instance drawn repeatedly and land in mergeInstanceHeuristics instead. Rather than depend on
     // which draw of a chunk happens to win that race, the value the shader reads is set directly.
     //
-    // Restricted to terrain because it is the only category whose coverage lives in vertex alpha rather
-    // than in its albedo.
+    // Restricted to terrain because it is the category whose coverage lives in vertex alpha rather than in
+    // its albedo *and* whose draws collide on one instance. Particles have the same vertex-alpha dependency
+    // and are fixed the same way in externalDrawTextureCategories, but they need only the draw-call half:
+    // one particle system is one geometry submitted once a frame, so the copy above sees it. Deliberately not
+    // widened to them here -- unlike terrain, particles also arrive from legacy D3D9 draws that derive these
+    // fields from real fixed-function stage state, and this point in the code cannot tell the two apart.
     if (drawCall.testCategoryFlags(InstanceCategories::Terrain)) {
       currentInstance.surface.textureAlphaOperation = DxvkRtTextureOperation::Modulate;
       currentInstance.surface.textureAlphaArg1Source = RtTextureArgSource::Texture;
