@@ -132,6 +132,22 @@ struct Material {
   // exporter writes back -- 44 properties were read and never written, and these are the ones the host
   // populates, so they were rendered and then dropped. A captured material previously came back at the
   // default roughness with no emissive, no metallic and no albedo tint.
+  // The translucent set. isTranslucent decides which MDL the material declares, and therefore which of the
+  // two attribute groups below is meaningful: the opaque shader has no transmittance or IOR, and the
+  // translucent shader has no metallic or roughness constant. Authoring the wrong group is not harmless --
+  // it writes names the shader in question does not have, which is how a capture ends up describing a
+  // material nothing can read.
+  //
+  // Defaults are the MDL's, so a material that says nothing here still describes itself correctly.
+  bool        isTranslucent = false;
+  float       refractiveIndex = 1.3f;
+  float       transmittanceColor[3] { 1.f, 1.f, 1.f };
+  float       transmittanceMeasurementDistance = 1.f;
+  std::string transmittanceTexPath;
+  bool        isThinWalled = false;
+  float       thinWallThickness = 0.001f;
+  bool        useDiffuseLayer = false;
+
   // Set when the constants below describe a mod replacement rather than what the game submitted, in which
   // case they are not authored at all -- the replacement supplies them again on reimport, and pairing them
   // with the game's albedo describes a material that exists in neither place. See
