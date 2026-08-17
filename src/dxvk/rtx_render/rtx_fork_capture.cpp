@@ -273,13 +273,6 @@ namespace fork_hooks {
       lssMat.normalTexPath = exportSlot(rtInstance.getNormalTextureIndex(), "normal");
       lssMat.roughnessTexPath = exportSlot(rtInstance.getRoughnessTextureIndex(), "roughness");
       lssMat.metallicTexPath = exportSlot(rtInstance.getMetallicTextureIndex(), "metallic");
-
-      // Translucent surfaces tint what passes through them by a texture rather than a constant when they
-      // have one. Water does not, so this is usually empty and the constant carries the colour.
-      if (rtInstance.getCapturedMaterial().isTranslucent) {
-        lssMat.transmittanceTexPath
-            = exportSlot(rtInstance.getCapturedMaterial().transmittanceTextureIndex, "transmittance");
-      }
       // The emissive mask, pointed straight at the albedo when it IS the albedo rather than exported again.
       //
       // That is the common case for this host, not a curiosity: materialFor binds the albedo hash into the
@@ -312,25 +305,6 @@ namespace fork_hooks {
     // The PBR constants, which the instance carries for exactly this purpose. See RtInstance::CapturedMaterial.
     {
       const auto& constants = rtInstance.getCapturedMaterial();
-
-      // The translucent set, when the runtime resolved this surface as translucent. Water is the case that
-      // matters: it carries an IOR, a transmittance colour and the distance over which that tint
-      // accumulates, and none of those exist in the opaque material model, so exporting it as opaque loses
-      // exactly the properties that make it water. InstanceManager::bindMaterial fills these from the
-      // resolved RtTranslucentSurfaceMaterial; before it had a translucent branch they were never read.
-      lssMat.isTranslucent = constants.isTranslucent;
-      if (constants.isTranslucent) {
-        lssMat.refractiveIndex = constants.refractiveIndex;
-        lssMat.transmittanceColor[0] = constants.transmittanceColor.x;
-        lssMat.transmittanceColor[1] = constants.transmittanceColor.y;
-        lssMat.transmittanceColor[2] = constants.transmittanceColor.z;
-        lssMat.transmittanceMeasurementDistance = constants.transmittanceMeasurementDistance;
-        lssMat.isThinWalled = constants.isThinWalled;
-        lssMat.thinWallThickness = constants.thinWallThickness;
-        lssMat.useDiffuseLayer = constants.useDiffuseLayer;
-        // The transmittance texture is exported alongside the other slots, where exportSlot is in scope.
-      }
-
       lssMat.constantsFromReplacement = constants.fromReplacement;
       lssMat.roughnessConstant = constants.roughnessConstant;
       lssMat.metallicConstant = constants.metallicConstant;

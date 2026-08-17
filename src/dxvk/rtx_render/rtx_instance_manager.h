@@ -169,24 +169,6 @@ public:
     float displaceOut = 0.f;
     bool enableEmission = false;
 
-    // The translucent set, populated only when the resolved material is translucent.
-    //
-    // A capture has to say which material model a surface belongs to, and for water that is
-    // AperturePBR_Translucent rather than AperturePBR_Opacity: refraction and transmittance have no
-    // representation in the opaque model at all, so exporting water as opaque loses the only properties that
-    // make it water. bindMaterial had no translucent branch before this, so these were never read.
-    //
-    // Defaults match the MDL's, so a material that never touches this set describes itself correctly by
-    // saying nothing.
-    bool isTranslucent = false;
-    float refractiveIndex = 1.3f;
-    Vector3 transmittanceColor { 1.f, 1.f, 1.f };
-    float transmittanceMeasurementDistance = 1.f;
-    uint32_t transmittanceTextureIndex = kSurfaceMaterialInvalidTextureIndex;
-    bool isThinWalled = false;
-    float thinWallThickness = 0.001f;
-    bool useDiffuseLayer = false;
-
     // Whether these values came from a replacement rather than from what the game submitted.
     //
     // bindMaterial fills this struct from the resolved RtSurfaceMaterial, which is the mod's material

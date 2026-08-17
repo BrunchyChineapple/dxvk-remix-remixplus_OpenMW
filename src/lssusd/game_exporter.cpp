@@ -359,15 +359,6 @@ enum Enum {
   SpriteSheetRows,
   SpriteSheetCols,
   SpriteSheetFps,
-  // The translucent set. Only authored on materials that declare AperturePBR_Translucent, because these
-  // names do not exist on the opaque shader and authoring them there would be read by nothing.
-  TransmittanceColor,
-  TransmittanceTex,
-  TransmittanceMeasurementDistance,
-  IorConstant,
-  ThinWalled,
-  ThinWallThickness,
-  UseDiffuseLayer,
 };
 static std::unordered_map<Enum,std::string> attrNames {
   {OutputsOut,       "outputs:out"},
@@ -436,16 +427,6 @@ static std::unordered_map<Enum,std::string> attrNames {
   {SpriteSheetRows,         "inputs:sprite_sheet_rows"},
   {SpriteSheetCols,         "inputs:sprite_sheet_cols"},
   {SpriteSheetFps,          "inputs:sprite_sheet_fps"},
-  // AperturePBR_Translucent's own parameters. transmittance_color and its measurement distance describe how
-  // far light travels before taking that tint, ior_constant is the refraction, and the thin-wall pair says
-  // whether the surface is a sheet or the boundary of a volume.
-  {TransmittanceColor,               "inputs:transmittance_color"},
-  {TransmittanceTex,                 "inputs:transmittance_texture"},
-  {TransmittanceMeasurementDistance, "inputs:transmittance_measurement_distance"},
-  {IorConstant,                      "inputs:ior_constant"},
-  {ThinWalled,                       "inputs:thin_walled"},
-  {ThinWallThickness,                "inputs:thin_wall_thickness"},
-  {UseDiffuseLayer,                  "inputs:use_diffuse_layer"},
 };
 static std::unordered_map<Enum,AttrDesc> attrDescs{
   AttrDescMapEntry(OutputsOut,       Token, false, Varying),
@@ -484,13 +465,6 @@ static std::unordered_map<Enum,AttrDesc> attrDescs{
   AttrDescMapEntry(SpriteSheetRows,          Int,  true, Uniform),
   AttrDescMapEntry(SpriteSheetCols,          Int,  true, Uniform),
   AttrDescMapEntry(SpriteSheetFps,           Int,  true, Uniform),
-  AttrDescMapEntry(TransmittanceColor,             Color3f, false, Uniform),
-  AttrDescMapEntry(TransmittanceTex,                 Asset, false, Varying),
-  AttrDescMapEntry(TransmittanceMeasurementDistance, Float, false, Uniform),
-  AttrDescMapEntry(IorConstant,                      Float, false, Uniform),
-  AttrDescMapEntry(ThinWalled,                        Bool, false, Uniform),
-  AttrDescMapEntry(ThinWallThickness,                Float, false, Uniform),
-  AttrDescMapEntry(UseDiffuseLayer,                   Bool, false, Uniform),
 };
 }
 }
@@ -579,46 +553,10 @@ void GameExporter::exportMaterials(const Export& exportData, ExportContext& ctx)
     setDataTexture(ShaderAttr::RoughnessTex, matData.roughnessTexPath);
     setDataTexture(ShaderAttr::MetallicTex, matData.metallicTexPath);
 
-    // Create and set OmniPBR MDL boilerplate attributes on shader.
-    //
-    // Which MDL a material declares is not boilerplate for translucent surfaces. Water resolves to a
-    // translucent material in the runtime -- refraction, a transmittance colour and the distance over which
-    // that tint accumulates -- and none of those properties exist in AperturePBR_Opacity. Declaring the
-    // opaque shader for it exported water as a diffuse-textured plane, which is not water in any renderer
-    // that reopens the capture. Both MDLs are already written beside the capture by exportMaterials above,
-    // so this costs a name rather than a new asset.
-    const bool translucent = matData.isTranslucent;
+    // Create and set OmniPBR MDL boilerplate attributes on shader
     ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::ImplSrc].Set(pxr::TfToken("sourceAsset")));
-    if (translucent) {
-      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::MdlSrcAsset].Set(
-          pxr::SdfAssetPath("./AperturePBR_Translucent.mdl")));
-      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::MdlSrcAssetSubId].Set(
-          pxr::TfToken("AperturePBR_Translucent")));
-    } else {
-      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::MdlSrcAsset].Set(
-          pxr::SdfAssetPath("./AperturePBR_Opacity.mdl")));
-      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::MdlSrcAssetSubId].Set(
-          pxr::TfToken("AperturePBR_Opacity")));
-    }
-
-    if (translucent) {
-      // AperturePBR_Translucent's own parameters. transmittance_color with its measurement distance is how
-      // far light travels through the medium before taking that tint, ior_constant is the refraction, and the
-      // thin-wall pair distinguishes a sheet of glass from the boundary of a volume of water.
-      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::TransmittanceColor].Set(pxr::GfVec3f(
-          matData.transmittanceColor[0], matData.transmittanceColor[1], matData.transmittanceColor[2])));
-      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::TransmittanceMeasurementDistance].Set(
-          matData.transmittanceMeasurementDistance));
-      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::IorConstant].Set(matData.refractiveIndex));
-      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::ThinWalled].Set(matData.isThinWalled));
-      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::ThinWallThickness].Set(matData.thinWallThickness));
-      ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::UseDiffuseLayer].Set(matData.useDiffuseLayer));
-      if (!matData.transmittanceTexPath.empty()) {
-        ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::TransmittanceTex].Set(
-            pxr::SdfAssetPath(matData.transmittanceTexPath)));
-        shaderAttrs[ShaderAttr::TransmittanceTex].SetColorSpace(pxr::TfToken("auto"));
-      }
-    }
+    ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::MdlSrcAsset].Set(pxr::SdfAssetPath("./AperturePBR_Opacity.mdl")));
+    ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::MdlSrcAssetSubId].Set(pxr::TfToken("AperturePBR_Opacity")));
 
     // Mark whether to enable varying opacity
     ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::Opacity].Set(matData.enableOpacity));
@@ -675,9 +613,7 @@ void GameExporter::exportMaterials(const Export& exportData, ExportContext& ctx)
     // Skipped where the values came from a replacement, because the replacement supplies them again on
     // reimport and the capture's albedo is the game's texture, not the mod's. Authoring them there paired a
     // mod's roughness and metallic with a vanilla albedo -- a material that exists in neither place.
-    // Skipped for translucent materials as well: AperturePBR_Translucent has no metallic or roughness
-    // constant, so these would be names its shader does not declare.
-    if (!matData.constantsFromReplacement && !translucent) {
+    if (!matData.constantsFromReplacement) {
       ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::RoughnessConstant].Set(matData.roughnessConstant));
       ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::MetallicConstant].Set(matData.metallicConstant));
       ASSERT_OR_EXECUTE(shaderAttrs[ShaderAttr::AlbedoConstant].Set(
