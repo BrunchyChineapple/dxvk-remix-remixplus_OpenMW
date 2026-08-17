@@ -167,7 +167,13 @@ namespace dxvk {
       //
       // 840 -> 848 on adding the height texture index and the two displacement depths to that struct, so
       // parallax round-trips through a capture as well.
-      static_assert(RtInstanceSize == 848, "RtInstance size has changed.  Fix the copy constructor above this message, then update the expected size.");
+      // 848 -> 888 on adding CapturedMaterial's translucent set, which a capture needs to describe water as
+      // AperturePBR_Translucent rather than as an opaque plane. Same reasoning as the constants above it.
+      //
+      // Taken off the compiler rather than reasoned about. Arithmetic over the struct's padding said 884 and
+      // was wrong; instantiating an undefined template with sizeof(RtInstance) makes the diagnostic print the
+      // number, which is the only way to get this right first time.
+      static_assert(RtInstanceSize == 888, "RtInstance size has changed.  Fix the copy constructor above this message, then update the expected size.");
     };
     CheckRtInstanceSize<sizeof(RtInstance)> _rtInstanceSizeTest;
   }
@@ -584,7 +590,7 @@ namespace dxvk {
       const std::unordered_set<RtInstance*>& activeReferences) {
     for (auto it = map.begin(); it != map.end(); ) {
       if (activeReferences.find(it->first) == activeReferences.end()) {
-        // Reference is gone — mark the derived instance for GC.
+        // Reference is gone â€” mark the derived instance for GC.
         it->second->markForGarbageCollection();
         it = map.erase(it);
       } else {
@@ -598,7 +604,7 @@ namespace dxvk {
       // Fast O(1) check: is the dying instance a key (reference) in the map?
       auto it = map.find(dying);
       if (it != map.end()) {
-        // The reference is being GC'd — mark the derived instance for GC
+        // The reference is being GC'd â€” mark the derived instance for GC
         // so it doesn't survive with a dangling m_linkedBlas pointer.
         // (m_isCreatedByRenderer prevents timeout-based GC, so we must mark explicitly.)
         it->second->markForGarbageCollection();
@@ -682,7 +688,7 @@ namespace dxvk {
     if (currentInstance == nullptr) {
       currentInstance = addInstance(blas);
     } else if (currentInstance->getBlas() != &blas) {
-      // The BlasEntry changed — re-link the instance to the current one.
+      // The BlasEntry changed â€” re-link the instance to the current one.
       BlasEntry* oldBlas = currentInstance->getBlas();
       if (oldBlas != nullptr) {
         oldBlas->unlinkInstance(currentInstance);
@@ -842,7 +848,7 @@ namespace dxvk {
           blendType = RtxOptions::enableEmissiveBlendModeTranslation() ? BlendType::kReverseColorEmissive : BlendType::kReverseColor;
           invertedBlend = false;
         } else if (srcColorBlendFactor == VkBlendFactor::VK_BLEND_FACTOR_ONE && dstColorBlendFactor == VkBlendFactor::VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR) {
-          // Emissive Color Blending: Src + Dst*(1-SrcColor) — bright source is emissive, dark is transparent
+          // Emissive Color Blending: Src + Dst*(1-SrcColor) â€” bright source is emissive, dark is transparent
           blendType = RtxOptions::enableEmissiveBlendModeTranslation() ? BlendType::kColorEmissive : BlendType::kColor;
           invertedBlend = false;
         } else if (srcColorBlendFactor == VkBlendFactor::VK_BLEND_FACTOR_ONE && dstColorBlendFactor == VkBlendFactor::VK_BLEND_FACTOR_ONE) {
@@ -1071,6 +1077,45 @@ namespace dxvk {
       // carried alongside it. So the inference made every captured material emit at 40 -- terrain came back
       // white and grass came back glowing yellow-green in the toolkit.
       instance.m_capturedMaterial.enableEmission = opaque.getEnableEmission();
+    } else if (material.getType() == RtSurfaceMaterialType::Translucent) {
+      // fork: the translucent set, for the capturer.
+      //
+      // This branch did not exist, so a translucent instance carried no captured material at all and a
+      // captured water surface came out as an opaque material with a diffuse texture.
+      //
+      // m_albedoOpacityTextureIndex must NOT be assigned here, and the first version of this branch did
+      // assign it -- pointed at the transmittance texture, so the existing albedo export path had something
+      // to write. The comment above it read "Nothing here affects rendering", which was false, and the cost
+      // of believing it was most of an evening.
+      //
+      // That member is pre-existing runtime state, not a fork addition, and OpacityMicromapManager reads it
+      // off the instance: it returns early on kSurfaceMaterialInvalidTextureIndex in two places, which is
+      // the only reason translucent surfaces had never been given an opacity micromap. Filling it in opted
+      // water into OMM baking with its transmittance texture standing in for an opacity map, and the result
+      // was per-micro-triangle opacity on a water plane -- black and visibly blocky.
+      //
+      // The general rule this earned: writing to a member the fork ADDED is safe to describe as
+      // capture-only, because nothing else knows it exists. Writing to a member that was already there is
+      // not, however unrelated its name looks. The three PBR indices below the opaque branch are the first
+      // kind; this one is the second.
+      //
+      // The assignment was redundant regardless. The capturer reads the transmittance slot from
+      // m_capturedMaterial.transmittanceTextureIndex, set below, and water has no albedo to export.
+      const auto& translucent = material.getTranslucentSurfaceMaterial();
+      instance.m_normalTextureIndex = translucent.getNormalTextureIndex();
+
+      instance.m_capturedMaterial.isTranslucent = true;
+      instance.m_capturedMaterial.refractiveIndex = translucent.getRefractiveIndex();
+      instance.m_capturedMaterial.transmittanceColor = translucent.getTransmittanceColor();
+      instance.m_capturedMaterial.transmittanceMeasurementDistance
+          = translucent.getTransmittanceMeasurementDistance();
+      instance.m_capturedMaterial.transmittanceTextureIndex = translucent.getTransmittanceTextureIndex();
+      instance.m_capturedMaterial.isThinWalled = translucent.getIsThinWalled();
+      instance.m_capturedMaterial.thinWallThickness = translucent.getThinWallThickness();
+      instance.m_capturedMaterial.useDiffuseLayer = translucent.getUseDiffuseLayer();
+      instance.m_capturedMaterial.enableEmission = translucent.getEnableEmission();
+      instance.m_capturedMaterial.emissiveIntensity = translucent.getEmissiveIntensity();
+      instance.m_capturedMaterial.emissiveTextureIndex = translucent.getEmissiveColorTextureIndex();
     } else if (material.getType() == RtSurfaceMaterialType::RayPortal) {
       instance.m_albedoOpacityTextureIndex = material.getRayPortalSurfaceMaterial().getMaskTextureIndex();
       instance.m_samplerIndex = material.getRayPortalSurfaceMaterial().getSamplerIndex();
@@ -1186,7 +1231,7 @@ namespace dxvk {
         currentInstance.surface.tFactor = drawCall.getMaterialData().tFactor;
         currentInstance.surface.alphaState = alphaState;
         currentInstance.surface.isAnimatedWater = currentInstance.testCategoryFlags(InstanceCategories::AnimatedWater);
-        // Surface::isDecalCategory (fork — 2026-06-18) removed 2026-06-19 with the
+        // Surface::isDecalCategory (fork â€” 2026-06-18) removed 2026-06-19 with the
         // cloud-shadow zenith gate that consumed it; the cloud shadow now folds
         // onto the sun term in the NEE and needs no per-surface geometry test.
         currentInstance.surface.associatedGeometryHash = drawCall.getHash(RtxOptions::geometryAssetHashRule());
@@ -1588,13 +1633,13 @@ namespace dxvk {
     RtInstance* viewModelInstance = nullptr;
     auto it = m_persistentViewModelInstances.find(const_cast<RtInstance*>(&reference));
     if (it != m_persistentViewModelInstances.end()) {
-      // Existing persistent instance — sync surface/material data from the
+      // Existing persistent instance â€” sync surface/material data from the
       // reference while preserving the corrected transform for change detection.
       viewModelInstance = it->second;
       viewModelInstance->updateFromReference(reference);
       notifySceneChanged();
     } else {
-      // First time seeing this reference — create a new persistent instance.
+      // First time seeing this reference â€” create a new persistent instance.
       const bool needValidGlobalInstanceId = false;
       viewModelInstance = createInstanceCopy(reference, needValidGlobalInstanceId);
       viewModelInstance->setFrameCreated(frameId);
@@ -2124,7 +2169,7 @@ namespace dxvk {
                                                                  const RayPortalManager& rayPortalManager) {
     // Early out if there is no eligible portal
     if (m_virtualInstancePortalIndex < 0) {
-      // No portal in range — clean up any leftover persistent virtual view model instances.
+      // No portal in range â€” clean up any leftover persistent virtual view model instances.
       for (auto& [ref, inst] : m_persistentVirtualViewModelInstances) {
         inst->markForGarbageCollection();
       }
@@ -2138,7 +2183,7 @@ namespace dxvk {
     }
 
     if (!RtxOptions::ViewModel::enableVirtualInstances()) {
-      // Feature disabled — clean up persistent instances.
+      // Feature disabled â€” clean up persistent instances.
       for (auto& [ref, inst] : m_persistentVirtualViewModelInstances) {
         inst->markForGarbageCollection();
       }
@@ -2200,7 +2245,7 @@ namespace dxvk {
 
   uint32_t InstanceManager::computeBillboardIntersectionPrimitiveMask(const RtInstance& instance) {
     // Player-model intersection primitives live in OBJECT_MASK_PLAYER_MODEL (and
-    // OBJECT_MASK_PLAYER_MODEL_VIRTUAL on portal clones — overwritten later in
+    // OBJECT_MASK_PLAYER_MODEL_VIRTUAL on portal clones â€” overwritten later in
     // createPlayerModelVirtualInstances). See instance_definitions.h for the mask layout.
     if (instance.m_isPlayerModel) {
       return OBJECT_MASK_PLAYER_MODEL;

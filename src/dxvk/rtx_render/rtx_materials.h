@@ -1078,6 +1078,57 @@ struct RtTranslucentSurfaceMaterial {
     fn(m_emissiveColorTextureIndex);
   }
 
+  // fork: read by the game capturer, which has to describe a translucent surface in USD rather than shade
+  // it. Without these, captured water exported as an opaque material carrying a diffuse texture -- which is
+  // not water in any renderer that reopens the file.
+  //
+  // m_cachedTransmittanceMeasurementDistanceOrThickness is deliberately not exposed. It folds the thin-wall
+  // case into the sign of one float for the GPU, and a capture wants the authored values rather than the
+  // encoding.
+  float getRefractiveIndex() const {
+    return m_refractiveIndex;
+  }
+
+  Vector3 getTransmittanceColor() const {
+    return m_transmittanceColor;
+  }
+
+  float getTransmittanceMeasurementDistance() const {
+    return m_transmittanceMeasurementDistance;
+  }
+
+  uint32_t getTransmittanceTextureIndex() const {
+    return m_transmittanceTextureIndex;
+  }
+
+  bool getIsThinWalled() const {
+    return m_isThinWalled;
+  }
+
+  float getThinWallThickness() const {
+    return m_thinWallThickness;
+  }
+
+  bool getUseDiffuseLayer() const {
+    return m_useDiffuseLayer;
+  }
+
+  uint32_t getNormalTextureIndex() const {
+    return m_normalTextureIndex;
+  }
+
+  uint32_t getEmissiveColorTextureIndex() const {
+    return m_emissiveColorTextureIndex;
+  }
+
+  bool getEnableEmission() const {
+    return m_enableEmission;
+  }
+
+  float getEmissiveIntensity() const {
+    return m_emissiveIntensity;
+  }
+
 private:
   void updateCachedHash() {
     static_assert(
