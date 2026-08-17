@@ -251,6 +251,24 @@ namespace fork_hooks {
       applyCategory(RtxOptions::beamTextures(), InstanceCategories::Beam);
       applyCategory(RtxOptions::decalTextures(), InstanceCategories::DecalStatic);
 
+      // These two were missing rather than deliberately omitted, and both drive real work.
+      //
+      // SmoothNormals is read in SceneManager::processDrawCallState, which dispatches
+      // dispatchSmoothNormals on BVH build or update for anything carrying the category. The D3D9 layer
+      // sets it from rtx.smoothNormalsTextures (d3d9_rtx.cpp) and nothing set it for API draws, so the
+      // option and its ten hashes did nothing at all on this host -- which matters more now that the
+      // faceted-shading re-sync from upstream is in.
+      //
+      // IgnoreOpacityMicromap is read in OpacityMicromapManager::checkInstance, and is the supported way
+      // to keep a surface out of OMM baking. Its 242 hashes were likewise inert here. The D3D9 path ORs in
+      // isUsingRaytracedRenderTarget alongside the hash lookup; that is not mirrored because it describes
+      // a D3D9 render-target condition an API submission does not have.
+      //
+      // Both are things the host has no opinion about, so unlike Sky/Terrain/Particle/AnimatedWater above
+      // there is nothing for them to contradict -- a hash list is the only way to state either.
+      applyCategory(RtxOptions::smoothNormalsTextures(), InstanceCategories::SmoothNormals);
+      applyCategory(RtxOptions::opacityMicromapIgnoreTextures(), InstanceCategories::IgnoreOpacityMicromap);
+
       // Let the vertex colour's alpha reach opacity for particles, which is where a particle's fade lives.
       //
       // The same defect as the terrain block below, in the other category the fork's own note said did not

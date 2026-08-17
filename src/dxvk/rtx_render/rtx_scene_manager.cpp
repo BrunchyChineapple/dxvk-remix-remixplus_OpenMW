@@ -1637,10 +1637,27 @@ namespace dxvk {
     }
 
     std::lock_guard lock { m_drawCallMeta.mutex };
-    auto [iter, isNew] = m_drawCallMeta.infos[m_drawCallMeta.ticker].emplace(objectPickingValue, meta);
-    ONCE_IF_FALSE(isNew, Logger::warn(
-      "Found multiple draw calls with the same \'objectPickingValue\'. "
-      "Ignoring further MetaInfo-s, some objects might be not be available through object picking"));
+    // First entry wins, and a repeat is not a problem worth warning about.
+    //
+    // The warning that used to be here ("Found multiple draw calls with the same objectPickingValue.
+    // Ignoring further MetaInfo-s...") fired constantly on this host and described a defect that is not
+    // one. Many instances sharing a single picking value is the model, not a collision: a picking value
+    // identifies a pickable *object*, and an object routinely becomes several instances.
+    //
+    // preserveInstancesWithObjectPicking is the proof. It assigns the same objectPickingValue to every
+    // prim of a replacement and then calls this function exactly once, which is the shape this whole
+    // mechanism assumes. The dynamic path simply never matched it -- processDrawCallState calls this per
+    // instance, and it is reached per prim from drawReplacements' loop and per submesh from the external
+    // draw path, so one replaced object with N prims produced N-1 "collisions" by construction.
+    //
+    // Nothing is lost by first-wins. Every instance sharing the value belongs to the same object, so any
+    // one of them is a valid representative for the legacy-texture-hash lookup this map exists to serve.
+    //
+    // Deliberately not "fixed" by hoisting the call out to the three call sites instead. That would be
+    // the tidier shape, but two of those sites are loops whose iteration is the thing being described,
+    // and the per-instance call is harmless once the map stops treating a repeat as an error. Silencing
+    // a false alarm is a smaller change than restructuring three paths to avoid raising it.
+    m_drawCallMeta.infos[m_drawCallMeta.ticker].emplace(objectPickingValue, meta);
   }
 
   const RtSurfaceMaterial& SceneManager::createSurfaceMaterial(const MaterialData& renderMaterialData,
