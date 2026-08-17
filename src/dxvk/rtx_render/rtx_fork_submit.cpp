@@ -223,14 +223,33 @@ namespace fork_hooks {
         }
       };
 
-      applyCategory(RtxOptions::skyBoxTextures(), InstanceCategories::Sky);
+      // Sky, Terrain, Particle and AnimatedWater are deliberately NOT looked up here, and the four
+      // applyCategory calls that used to do so are gone rather than commented out.
+      //
+      // Texture-hash category lists exist so Remix can infer what a D3D9 draw *is*. This host does not
+      // need inferring at -- runtime.hpp says so where the API's category bits are mirrored: "Setting these
+      // is what makes Remix's usual texture-hash tagging workflow unnecessary". It states all four itself:
+      // Sky from Mask_Sky/Mask_Sun/Mask_WeatherParticles, Terrain from Terrain::TerrainDrawable,
+      // Particle from Mask_ParticleSystem, AnimatedWater from Mask_Water/Mask_SimpleWater.
+      //
+      // Leaving them meant the lists could contradict the host, and Terrain proved that in practice.
+      // remixscene.cpp was changed to take Terrain from the drawable's type precisely because an inherited
+      // quadtree mask was mislabelling paged statics, grass and water -- and rtx.terrainTextures then
+      // re-added the label to two of this host's textures anyway, undoing the fix from the other side.
+      //
+      // Measured on a capture taken 2026-08-17: of 1550 hashes across the twenty lists in rtx.conf, 702 sit
+      // in these four, all of them describing things the host had already declared. The lists came over from
+      // the original-engine project, where the same Morrowind textures hash identically, so they match often
+      // enough to matter while carrying no authority about this host's scene graph.
+      //
+      // The remaining lists stay: Ignore, WorldUI, WorldMatte, Beam, DecalStatic, IgnoreLights,
+      // IgnoreAntiCulling, IgnoreMotionBlur and Hidden are all things the host has no opinion about, so a
+      // hash list is the only way to say them.
       applyCategory(RtxOptions::ignoreTextures(), InstanceCategories::Ignore);
       applyCategory(RtxOptions::worldSpaceUiTextures(), InstanceCategories::WorldUI);
       applyCategory(RtxOptions::worldSpaceUiBackgroundTextures(), InstanceCategories::WorldMatte);
-      applyCategory(RtxOptions::particleTextures(), InstanceCategories::Particle);
       applyCategory(RtxOptions::beamTextures(), InstanceCategories::Beam);
       applyCategory(RtxOptions::decalTextures(), InstanceCategories::DecalStatic);
-      applyCategory(RtxOptions::terrainTextures(), InstanceCategories::Terrain);
 
       // Let the vertex colour's alpha reach opacity for particles, which is where a particle's fade lives.
       //
