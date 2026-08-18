@@ -944,8 +944,8 @@ AtmosphereArgs RtxAtmosphere::getAtmosphereArgs() const {
     args.cloudUndersideLightSigma = wx ? wx->cloudUndersideLightSigma : RtxAtmosphere::cloudUndersideLightSigma();
   }
 
-  // Aerial perspective (fork — 2026-08-18). The camera basis is filled in per frame by
-  // fillAerialPerspectiveArgs(); only the camera-independent scalars are set here.
+  // Aerial perspective (fork — 2026-08-18). setAerialPerspectiveCamera caches the camera basis once
+  // per frame; this block copies those members over alongside the camera-independent scalars.
   {
     const float worldUnitsPerMeter = RtxOptions::getMeterToWorldUnitScale();
     args.aerialPerspectiveLutSize = RtxAtmosphere::aerialPerspective() ? kAerialPerspectiveLutSize : 0u;

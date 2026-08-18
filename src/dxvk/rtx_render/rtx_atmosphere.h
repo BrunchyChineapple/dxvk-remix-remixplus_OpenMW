@@ -158,8 +158,11 @@ public:
                "global volumetrics froxel range renders at full saturation and contrast. Where global volumetrics are "
                "enabled the march starts past that grid's range, so the two hand off instead of double counting.");
     RTX_OPTION_ARGS("rtx.atmosphere", float, aerialPerspectiveDepthRangeMeters, 32000.0f,
-               "Depth in meters covered by the aerial perspective volume. Bring this closer to the camera for denser "
-               "atmospheres to spend the 32 slices over a shorter, more accurate range.",
+               "Depth in meters covered by the aerial perspective volume. Reducing it spends the 32 slices over a "
+               "shorter range, which samples the near field more finely but makes the effect weaker, not stronger: "
+               "less distance is integrated, and everything past the volume holds the value at its far edge. Raise "
+               "it to carry the effect further out. Measured at Morrowind's scale the result is subtle either way, "
+               "a fraction of a percent of dimming, so expect a tuning knob rather than a visible switch.",
                args.minValue = 100.0f);
     RTX_OPTION("rtx.atmosphere", float, sunShadowSoftnessDeg, 0.0f,
                "Decoupled sun shadow softness, as the distant light's angular half-angle in degrees. "
