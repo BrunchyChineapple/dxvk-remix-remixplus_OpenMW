@@ -54,7 +54,7 @@
 #include "rtx_particle_system.h"
 #include <d3d9types.h>
 
-namespace dxvk 
+namespace dxvk
 {
 class DxvkContext;
 class DxvkDevice;
@@ -62,6 +62,7 @@ struct AssetReplacement;
 struct AssetReplacer;
 class OpacityMicromapManager;
 class TerrainBaker;
+class WeatherBlender;
 
 // The resource cache can be *searched* by other users
 class ResourceCache {
@@ -201,6 +202,8 @@ public:
   GraphManager& getGraphManager() { return m_graphManager; }
   std::unique_ptr<AssetReplacer>& getAssetReplacer() { return m_pReplacer; }
   TerrainBaker& getTerrainBaker() { return *m_terrainBaker.get(); }
+
+  WeatherBlender* getWeatherBlender() const { return m_weatherBlender.get(); }
 
   // Scene utility functions
   static Vector3 getSceneUp();
@@ -528,6 +531,7 @@ private:
   // are dropped -- a light that comes back into view sooner than that keeps its phase rather than snapping.
   static constexpr size_t kLightFlickerPruneThreshold = 512;
   static constexpr uint32_t kLightFlickerPruneFrames = 600;
+  std::unique_ptr<WeatherBlender> m_weatherBlender;
 };
 
 }  // namespace nvvk

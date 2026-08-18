@@ -673,13 +673,14 @@ namespace fork_hooks {
   // texture hash. See docs/fork-touchpoints.md.
   bool externalDrawTerrainBake(const Rc<DxvkContext>& ctx, SceneManager& scene,
                                DrawCallState& drawCall, const MaterialData*& material);
-  // Fills in the weather precipitation emitter's draw call (transform + the
-  // blend state the generated particle geometry inherits). Needs access to
-  // DrawCallState's private transformData / materialData, same as the API's
-  // RemixAPIPrivateAccessor::toRtDrawState which builds an external draw the
-  // same way. See docs/fork-touchpoints.md.
-  void precipitationEmitterDrawCall(DrawCallState& drawCall,
-                                    const Matrix4& objectToWorld);
+  // precipitationEmitterDrawCall retired in the 2026-08-18 atmosphere merge.
+  //
+  // It existed because the fork's precipitation emitter needed DrawCallState's private transformData and
+  // materialData to build an external draw. The nativeized rtx_precipitation.cpp does that itself now: it
+  // constructs its own DrawCallState and calls buildEmitterTransform, so the hook has no definition and no
+  // callers, and the merge dropped its friend declaration along with the rewrite. Recorded rather than
+  // silently deleted because a declaration without a definition only fails at the call site, which is how
+  // this would otherwise come back as a confusing link error.
 }
 
 struct DrawCallState {
@@ -876,12 +877,6 @@ private:
       DrawCallState& drawCall, const MaterialData*& material);
   friend void fork_hooks::externalDrawTextureCategories(
     XXH64_hash_t textureHash, DrawCallState& drawCall);
-
-  // Fork touchpoint: the precipitation emitter builds its DrawCallState from
-  // scratch and needs transformData / materialData. See
-  // docs/fork-touchpoints.md.
-  friend void fork_hooks::precipitationEmitterDrawCall(
-    DrawCallState& drawCall, const Matrix4& objectToWorld);
 
   bool finalizeGeometryHashes();
   void finalizeGeometryBoundingBox();

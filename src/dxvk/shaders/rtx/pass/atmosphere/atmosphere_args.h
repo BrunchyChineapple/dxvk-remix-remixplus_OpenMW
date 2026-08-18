@@ -62,9 +62,17 @@ struct AtmosphereArgs {
   vec3 mieScattering;
   float sunRayBrightness;  // Multiplier for direct sun ray brightness
 
+  // Aerosols absorb as well as scatter (Hillaire EGSR 2020, Table 1), so Mie extinction is
+  // scattering + absorption. Before this row existed the fork modelled only the scattering half,
+  // which left aerosol extinction at roughly half its physical value: haze brightened as it
+  // thickened instead of also darkening, and could not be tinted. Raising this relative to
+  // mieScattering is what makes dust brown-and-dim rather than grey-and-bright.
+  vec3 mieAbsorption;  // Absorption coefficients (km^-1)
+  float padMieAbsorptionRow;  // free
+
   // Ozone absorption (important for realistic sunset colors per Hillaire paper Section 3.4)
   vec3 ozoneAbsorption;  // Absorption coefficients (km^-1)
-  float ozoneLayerAltitude;  // Peak altitude of ozone layer (km)
+  float ozoneLayerAltitude;  // Peak altitude of the ozone tent profile (km)
 
   uint transmittanceLutWidth;
   uint transmittanceLutHeight;
@@ -72,7 +80,7 @@ struct AtmosphereArgs {
   uint skyViewLutWidth;
 
   uint skyViewLutHeight;
-  float ozoneLayerWidth;  // Width of ozone layer (km)
+  float ozoneLayerWidth;  // Half-width of the ozone tent profile (km); the paper's 30 km tent = 15
   float padRetired10;     // retired: viewAltitude (camera altitude offset, km) — never read by any pass.
   float multiScatterPhysicalStrength;  // 0 = pure analytical (artistic, preset-faithful), 1 = pure LUT-based hemisphere integration (physical)
 
@@ -295,15 +303,10 @@ struct AtmosphereArgs {
 
   float cloudCoverageSpread;       // [0,1] amplitude of coverage variation around mean.
   float cloudCoverageNoiseScale;   // Region size frequency for coverage noise (independent of type).
-  float nubis3SunNearFieldKm;      // Near-field live sun-occlusion range in km
-                                   // (fork — 2026-07-17, Nubis p.129 "first
-                                   // light samples live"): per lit march sample,
-                                   // 2 live density taps over this range replace
-                                   // the D_sun grid's near field (the grid tap
-                                   // moves to the range end for the far field) —
-                                   // directional lobe self-shadowing the grid's
-                                   // ~0.6 km bake taps low-pass away. 0 = grid
-                                   // only. (Third reuse of the retired pads.)
+  float padRetired12;              // retired 2026-07-30: nubis3SunNearFieldKm (near-field live
+                                   // sun-occlusion range). The live path was removed once the
+                                   // de-jittered D_sun bake reproduced the look; see
+                                   // docs/fork-touchpoints.md.
   float cloudMsScale;              // Multi-scatter sigma_ms master multiplier (1.0 = paper baseline)
 
   float cloudAmbientShadowStrength; // [0..1] D_sun-keyed attenuation of the cloud AMBIENT term
@@ -481,7 +484,13 @@ struct AtmosphereArgs {
   float padRetired5;               // retired: legacy vertical noise stretch.
 
   // ----- (former Worley carve params — retired with the legacy 256^3 bake) -----
-  float padRetired6;
+  // Contribution-weighted lighting LOD threshold (fork — 2026-07-30, perf).
+  // A march sample whose contribution weight (viewTransmittance x aerial haze x
+  // its own opacity) falls below this drops the near-field live sun refinement
+  // and the moon shadow march, falling back to the D_sun grid and unshadowed
+  // moonlight respectively. 0 disables the LOD. Rides the former padRetired6
+  // slot — CB layout unchanged (16-byte-row discipline preserved).
+  float cloudLightingLodThreshold;
   float padRetired7;
   uint  padRetired8;
   float cloudAerialHazePerKm;      // Aerial-perspective HAZE on cloud radiance (1/km). Dims distant
@@ -642,4 +651,37 @@ struct AtmosphereArgs {
                                 // any further growth needs a new full
                                 // 16-byte row (see the CB-alignment
                                 // discipline note at the top).
+
+  // ----- Aerial perspective froxel volume (Hillaire EGSR 2020, Section 5.4) -----
+  // Camera-frustum-fitted 32^3 volume holding, per froxel, the atmospheric in-scattered luminance
+  // toward the camera in RGB and the mean transmittance in A, so applying it to a shaded pixel is a
+  // single multiply-add. This is what gives distant geometry its haze and desaturation; without it
+  // everything past the global volumetrics froxel range renders at full saturation and contrast.
+  //
+  // Rebuilt every frame (unlike the parameter-only transmittance / multiscattering / sky-view
+  // bakes), so these fields are deliberately grouped LAST: RtxAtmosphere's bake-invalidation
+  // memcmp only covers the camera-independent prefix ahead of them. Anything added below this
+  // point must be camera-dependent, and anything that should re-trigger a bake must go above.
+  uint aerialPerspectiveLutSize;      // Width/height/depth of the volume; 0 when disabled
+  float aerialPerspectiveDepthRange;  // Depth covered by the volume, in world units
+  // In-scatter nearer than this is already integrated by the global volumetrics froxel grid, so the
+  // aerial perspective march starts here rather than at the camera to avoid double counting.
+  // 0 when global volumetrics are disabled.
+  float aerialPerspectiveStartDistance;
+  uint isZUp;  // Non-zero when the game world is Z-up rather than the atmosphere's internal Y-up
+
+  // Camera basis in world units. cameraRight / cameraUp are pre-scaled by the frustum half extents
+  // at unit forward distance, so a ray built from them always has a forward component of exactly
+  // one and the slice index maps directly to forward distance.
+  vec3 cameraPosition;
+  float padAerial0;
+
+  vec3 cameraForward;
+  float padAerial1;
+
+  vec3 cameraRight;
+  float padAerial2;
+
+  vec3 cameraUp;
+  float padAerial3;
 };
