@@ -269,13 +269,13 @@ namespace dxvk {
                                     const float* weatherOverride,
                                     float speed, int minValue, int maxValue) {
       if (!weatherOverride) {
-        RemixGui::DragInt(label, opt, speed, minValue, maxValue);
+        RemixGui::DragInt(label, opt, speed, minValue, maxValue, "%d", ImGuiSliderFlags_AlwaysClamp);
         return;
       }
 
       int value = static_cast<int>(*weatherOverride + 0.5f);
       ImGui::BeginDisabled(true);
-      ImGui::DragInt(label, &value, speed, minValue, maxValue);
+      ImGui::DragInt(label, &value, speed, minValue, maxValue, "%d", ImGuiSliderFlags_AlwaysClamp);
       ImGui::EndDisabled();
     }
   }
@@ -306,9 +306,9 @@ namespace dxvk {
       RemixGui::Checkbox("Show Advanced Options", &showAdvanced);
 
       if (showAdvanced) {
-        RemixGui::DragInt("Froxel Grid Resolution Scale", &froxelGridResolutionScaleObject(), 0.1f, 1);
-        RemixGui::DragInt("Froxel Depth Slices", &froxelDepthSlicesObject(), 0.1f, 1, UINT16_MAX);
-        RemixGui::DragInt("Max Accumulation Frames", &maxAccumulationFramesObject(), 0.1f, 1, UINT8_MAX);
+        RemixGui::DragInt("Froxel Grid Resolution Scale", &froxelGridResolutionScaleObject(), 0.1f, 1, INT_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
+        RemixGui::DragInt("Froxel Depth Slices", &froxelDepthSlicesObject(), 0.1f, 1, UINT16_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
+        RemixGui::DragInt("Max Accumulation Frames", &maxAccumulationFramesObject(), 0.1f, 1, UINT8_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
         RemixGui::DragFloat("Froxel Depth Slice Distribution Exponent", &froxelDepthSliceDistributionExponentObject(), 0.01f, 0.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);
         dragFloatWithWeatherOverride(
             "Froxel Max Distance", &froxelMaxDistanceMetersObject(),
@@ -323,11 +323,11 @@ namespace dxvk {
 
         ImGui::BeginDisabled(enableReferenceMode());
 
-        RemixGui::DragInt("Restir Grid Downsample Factor", &restirGridScaleObject(), 0.1f, 1);
-        RemixGui::DragInt("Restir Froxel Depth Slices", &restirFroxelDepthSlicesObject(), 0.1f, 1, UINT16_MAX);
+        RemixGui::DragInt("Restir Grid Downsample Factor", &restirGridScaleObject(), 0.1f, 1, INT_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
+        RemixGui::DragInt("Restir Froxel Depth Slices", &restirFroxelDepthSlicesObject(), 0.1f, 1, UINT16_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
         RemixGui::DragFloat("Restir Guard Band Scale Factor", &restirGridGuardBandFactorObject(), 0.1f, 1.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 
-        RemixGui::DragInt("Initial RIS Sample Count", &initialRISSampleCountObject(), 0.05f, 1, UINT8_MAX);
+        RemixGui::DragInt("Initial RIS Sample Count", &initialRISSampleCountObject(), 0.05f, 1, UINT8_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
         RemixGui::Checkbox("Enable Initial Visibility", &enableInitialVisibilityObject());
         ImGui::BeginDisabled(!enableInitialVisibility());
         RemixGui::Checkbox("Enable Visibility Reuse", &visibilityReuseObject());
@@ -335,14 +335,14 @@ namespace dxvk {
 
         RemixGui::Checkbox("Enable Temporal Resampling", &enableTemporalResamplingObject());
         ImGui::BeginDisabled(!enableTemporalResampling());
-        RemixGui::DragInt("Temporal Resampling Max Sample Count", &temporalReuseMaxSampleCountObject(), 1.0f, 1, UINT16_MAX);
+        RemixGui::DragInt("Temporal Resampling Max Sample Count", &temporalReuseMaxSampleCountObject(), 1.0f, 1, UINT16_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
         ImGui::EndDisabled();
 
         RemixGui::Separator();
 
         RemixGui::Checkbox("Enable Spatial Resampling", &enableSpatialResamplingObject());
         ImGui::BeginDisabled(!enableSpatialResampling());
-        RemixGui::DragInt("Spatial Resampling Max Sample Count", &spatialReuseMaxSampleCountObject(), 1.0f, 1, UINT16_MAX);
+        RemixGui::DragInt("Spatial Resampling Max Sample Count", &spatialReuseMaxSampleCountObject(), 1.0f, 1, UINT16_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
         RemixGui::DragFloat("Clamped Spatial Resampling Search Radius", &spatialReuseSamplingRadiusObject(), 0.01f, 0.0f, 10.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
         ImGui::EndDisabled();
 
@@ -482,8 +482,8 @@ namespace dxvk {
         ImGui::Indent();
         ImGui::BeginDisabled(!enableAtmosphere());
         {
-          RemixGui::DragFloat("Planet Radius", &atmospherePlanetRadiusMetersObject(), 0.1f, -FLT_MAX, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::DragFloat("Height", &atmosphereHeightMetersObject(), 0.1f, -FLT_MAX, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          RemixGui::DragFloat("Planet Radius", &atmospherePlanetRadiusMetersObject(), 0.1f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          RemixGui::DragFloat("Height", &atmosphereHeightMetersObject(), 0.1f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
           RemixGui::Checkbox("Inverted", &atmosphereInvertedObject());
           ImGui::EndDisabled();
         }
