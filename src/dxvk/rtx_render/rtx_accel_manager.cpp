@@ -1190,10 +1190,13 @@ namespace dxvk {
     //
     // Three things were wrong with only checking PRIMITIVE_INDEX_MAX_VALUE under ONCE().
     //
-    // It is the wrong limit to check first. The NEE cache packs its prefix-sum ID into 24 bits beside a
-    // range field, reserving all-ones for "invalid", so NEE_PREFIX_SUM_ID_MAX_VALUE binds well before the
-    // 26-bit one. A scene can be comfortably inside the reported limit and still be corrupting every
-    // cached light sample.
+    // It is the wrong limit to check first -- or it was, when this was written. The NEE cache packed its
+    // prefix-sum ID into 24 bits beside an 8-bit range field while PRIMITIVE_INDEX was 26, so
+    // NEE_PREFIX_SUM_ID_MAX_VALUE bound well before it and a scene could sit comfortably inside the
+    // reported limit while corrupting every cached light sample. Both widths are PRIMITIVE_INDEX_BIT_COUNT
+    // now and the NEE limit is exactly one lower, because it still reserves all-ones for "invalid". The
+    // NEE check stays first: it is still the tighter of the two, and its overflow silently mis-shades
+    // rather than merely mis-indexing.
     //
     // ONCE() reports a condition that comes and goes as though it happened once at startup. This is
     // entered and left as the camera moves, and the interesting event is it getting *worse*. Reporting on
