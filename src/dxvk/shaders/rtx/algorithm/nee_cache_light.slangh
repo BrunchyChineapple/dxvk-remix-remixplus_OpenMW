@@ -109,10 +109,10 @@ struct NEECacheUtils
 
     // A scene can hold more primitive IDs than this field can represent. AccelManager measures the
     // total against NEE_PREFIX_SUM_ID_MAX_VALUE every frame and has reported it several times over in
-    // ordinary exteriors. The ID is packed into 24 bits downstream -- see the (range << 24) | prefixSumID
-    // encoding in update_nee_cache -- so a value at or above the reserved invalid value either aliases
-    // "invalid" or truncates into an unrelated ID that resolves to the wrong surface and triangle.
-    // Reporting it as invalid costs this sample and nothing else.
+    // ordinary exteriors. The ID is packed into PRIMITIVE_INDEX_BIT_COUNT bits downstream -- see the
+    // (range << PRIMITIVE_INDEX_BIT_COUNT) | prefixSumID encoding in update_nee_cache -- so a value at or
+    // above the reserved invalid value either aliases "invalid" or truncates into an unrelated ID that
+    // resolves to the wrong surface and triangle. Reporting it as invalid costs this sample and nothing else.
     if (prefixSumID < 0 || prefixSumID > NEE_PREFIX_SUM_ID_MAX_VALUE)
     {
       return NEE_CACHE_INVALID_ID;
@@ -388,10 +388,12 @@ struct NEECacheUtils
     //
     // triangleCount can be 0 here. It is the difference of two prefix-sum entries for a surface named by a
     // cached candidate, and that surface may have been emptied or re-indexed since the candidate was
-    // written. It can also be wrong outright: the NEE cache packs (range << 24) | prefixSumID into one
-    // word, so once a scene's primitive ID total passes NEE_PREFIX_SUM_ID_MAX_VALUE the ID truncates on
-    // unpack and both halves describe a different surface than the one recorded. Heavy exteriors in this
-    // project reach 73.7M primitive IDs against a 16.7M limit, so this is a live condition.
+    // written. It can also be wrong outright: the NEE cache packs (range << PRIMITIVE_INDEX_BIT_COUNT) |
+    // prefixSumID into one word, so once a scene's primitive ID total passes NEE_PREFIX_SUM_ID_MAX_VALUE the
+    // ID truncates on unpack and both halves describe a different surface than the one recorded. Heavy
+    // exteriors in this project measured 73.7M primitive IDs, which overflowed the old 24-bit field
+    // (16,777,214) outright. PRIMITIVE_INDEX_BIT_COUNT is 27 now, so that measurement fits, but the guard
+    // stays: the stale/re-indexed surface case above is independent of the field width.
     //
     // Clamping to 0 on an empty surface reads that surface's first triangle: in bounds, degenerate at
     // worst, and the zero area it yields already contributes nothing. The cost is one NEE sample.

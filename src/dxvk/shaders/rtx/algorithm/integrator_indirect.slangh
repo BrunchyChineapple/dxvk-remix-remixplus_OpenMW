@@ -809,7 +809,8 @@ void integratePathVertex(
           // Inserting 0xFFFF as a triangle prefix sum ID corrupts the NEE cache and
           // can cause an out-of-range shared memory access in the update shader.
           // This isn't caught by if (lastID == NEE_CACHE_INVALID_ID) because
-          // 0xFFFF != 0xFFFFFF. The binary search in convertPrefixSumIDToID treats
+          // NEE_CACHE_INVALID_ID is all-ones over PRIMITIVE_INDEX_BIT_COUNT bits
+          // (0x7FFFFFF at 27 bits), not 0xFFFF. The binary search in convertPrefixSumIDToID treats
           // 65535 as a real prefix sum ID, producing garbage surfaceID/primitiveID.
           const bool isLightTask = lightIdx != kInvalidLightIdx;
           if (NEE_CACHE_ENABLE && cb.neeCacheArgs.enable && 

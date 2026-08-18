@@ -370,7 +370,7 @@ void updateTriangleTask(NEECell cell, uint2 localIndex)
       {
         // Discarding the result here meant an unresolvable ID left newSurfaceID as
         // NEE_CACHE_INVALID_ID, and getSurfacePrimitiveCount below would index the prefix-sum buffer
-        // at 16,777,216 on every thread that hit one. Drop the candidate instead.
+        // at NEE_CACHE_INVALID_ID on every thread that hit one. Drop the candidate instead.
         s_candidateList[i][localIndex.y] = uint2(NEE_CACHE_INVALID_ID, 0);
         continue;
       }
